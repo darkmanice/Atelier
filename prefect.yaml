@@ -1,0 +1,18 @@
+# Deployment declarativo de Prefect. El worker lo aplica al arrancar con
+# `prefect deploy --all`.
+#
+# Define un único deployment llamado "default" en el flow "pipeline".
+# La invocación desde el orchestrator se hace con:
+#   run_deployment("pipeline/default", parameters={...})
+
+prefect-version: "3"
+
+deployments:
+  - name: default
+    entrypoint: flows/pipeline.py:pipeline_flow
+    work_pool:
+      name: pipeline-pool
+    # Concurrencia: máximo N flow runs en paralelo en este pool.
+    # Respeta PIPELINE_MAX_CONCURRENT de tu .env.
+    concurrency_limit: 2
+    description: "Pipeline Implementer → Reviewer → Simplifier"

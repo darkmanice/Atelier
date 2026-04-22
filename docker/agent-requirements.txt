@@ -1,0 +1,4 @@
+ollama==0.4.7
+aider-chat==0.86.2
+pydantic>=2.11,<3
+pyyaml>=6

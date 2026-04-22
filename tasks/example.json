@@ -1,0 +1,5 @@
+{
+  "prompt": "Add a simple REST endpoint GET /api/ping that returns {\"pong\": true} as JSON. Add a pytest test for it in tests/test_ping.py.",
+  "repo_path": "target-repo",
+  "base_branch": "main"
+}

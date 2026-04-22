@@ -1,0 +1,161 @@
+# pipeline-ia con Prefect 3 como orquestador.
+#
+# Servicios:
+#   - prefect-server: UI + API de Prefect en :4200
+#   - prefect-worker: ejecuta los flows (tu código de orquestación)
+#   - orchestrator:   FastAPI en :8000, dispara deployments de Prefect
+#   - agent-builder:  construye la imagen del agente (one-shot)
+#   - runner-quick-builder: construye la imagen de runner quick/full (one-shot)
+#   - runner-e2e-builder:   construye la imagen de runner E2E (one-shot)
+
+name: pipeline-ia-prefect
+
+services:
+  # -----------------------
+  # Prefect Server (UI + API)
+  # -----------------------
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    container_name: pipeline-prefect-server
+    restart: unless-stopped
+    command: prefect server start --host 0.0.0.0 --port 4200
+    environment:
+      - PREFECT_UI_URL=http://localhost:4200
+      - PREFECT_API_URL=http://localhost:4200/api
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+      - PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=false
+    ports:
+      - "4200:4200"
+    volumes:
+      - prefect-data:/root/.prefect
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - pipeline
+
+  # -----------------------
+  # Prefect Worker (ejecuta los flows)
+  # -----------------------
+  prefect-worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    image: pipeline-worker:latest
+    container_name: pipeline-prefect-worker
+    restart: unless-stopped
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      agent-builder:
+        condition: service_completed_successfully
+      runner-quick-builder:
+        condition: service_completed_successfully
+      runner-e2e-builder:
+        condition: service_completed_successfully
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./worktrees:/app/worktrees
+      - ./logs:/app/logs
+      - ${PIPELINE_REPOS_HOST:-./repos}:/repos
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - OLLAMA_HOST_FROM_CONTAINER=${OLLAMA_EXTERNAL_URL:-http://172.21.192.1:11434}
+      - PIPELINE_MODEL=${PIPELINE_MODEL:-gemma4:26b}
+      - PIPELINE_MAX_CONCURRENT=${PIPELINE_MAX_CONCURRENT:-2}
+      - PIPELINE_MAX_RETRY_ATTEMPTS=${PIPELINE_MAX_RETRY_ATTEMPTS:-2}
+      - PIPELINE_ROOT=/app
+      - PIPELINE_WORKTREES=/app/worktrees
+      - PIPELINE_LOGS=/app/logs
+      - PIPELINE_WORKTREES_HOST=${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}
+      - PIPELINE_REPOS_HOST=${PIPELINE_REPOS_HOST:-${PWD}/repos}
+      - PIPELINE_AGENT_IMAGE=pipeline-agent:latest
+      - PIPELINE_AGENT_NETWORK=pipeline-ia-prefect_pipeline
+      - PIPELINE_AGENT_MEM=${PIPELINE_AGENT_MEM:-4g}
+      - PIPELINE_AGENT_CPUS=${PIPELINE_AGENT_CPUS:-2.0}
+      - PIPELINE_AGENT_TIMEOUT=${PIPELINE_AGENT_TIMEOUT:-2400}
+      - PIPELINE_RUNNER_QUICK_IMAGE=pipeline-runner-quick:latest
+      - PIPELINE_RUNNER_E2E_IMAGE=pipeline-runner-e2e:latest
+    command: >
+      sh -c "
+      prefect work-pool create pipeline-pool --type process --overwrite || true &&
+      prefect deploy --all --prefect-file /app/prefect.yaml &&
+      prefect worker start --pool pipeline-pool
+      "
+    networks:
+      - pipeline
+
+  # -----------------------
+  # FastAPI (dispara flows de Prefect)
+  # -----------------------
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator.Dockerfile
+    image: pipeline-orchestrator:latest
+    container_name: pipeline-orchestrator
+    restart: unless-stopped
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    ports:
+      - "${ORCHESTRATOR_PORT:-8000}:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ${PIPELINE_REPOS_HOST:-./repos}:/repos
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - PIPELINE_MODEL=${PIPELINE_MODEL:-gemma4:26b}
+      - PIPELINE_DEPLOYMENT_NAME=pipeline/default
+      - PIPELINE_LOGS=/app/logs
+    networks:
+      - pipeline
+
+  # -------------------------------------------------------------
+  # Agent-builder: construye la imagen del agente y sale.
+  # -------------------------------------------------------------
+  agent-builder:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    image: pipeline-agent:latest
+    container_name: pipeline-agent-builder
+    entrypoint: ["true"]
+    restart: "no"
+
+  # -------------------------------------------------------------
+  # Runner-quick-builder: construye la imagen de runner para tests unit/full.
+  # -------------------------------------------------------------
+  runner-quick-builder:
+    build:
+      context: .
+      dockerfile: docker/runner-quick.Dockerfile
+    image: pipeline-runner-quick:latest
+    container_name: pipeline-runner-quick-builder
+    entrypoint: ["true"]
+    restart: "no"
+
+  # -------------------------------------------------------------
+  # Runner-e2e-builder: construye la imagen de runner E2E con Playwright.
+  # (~1.5 GB, tarda bastante la primera vez)
+  # -------------------------------------------------------------
+  runner-e2e-builder:
+    build:
+      context: .
+      dockerfile: docker/runner-e2e.Dockerfile
+    image: pipeline-runner-e2e:latest
+    container_name: pipeline-runner-e2e-builder
+    entrypoint: ["true"]
+    restart: "no"
+
+volumes:
+  prefect-data:
+    name: pipeline-ia-prefect_prefect-data
+
+networks:
+  pipeline:
+    name: pipeline-ia-prefect_pipeline
+    driver: bridge
