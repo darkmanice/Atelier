@@ -11,6 +11,7 @@ Los comandos se ejecutan con `cwd` igual al worktree del host, para que
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,10 +27,19 @@ class ServiceResult:
 
 
 def run_service_command(
-    command: str, host_worktree_path: Path, timeout_sec: int = 300
+    command: str,
+    host_worktree_path: Path,
+    timeout_sec: int = 300,
+    env: dict[str, str] | None = None,
 ) -> ServiceResult:
-    """Ejecuta un comando shell con cwd en el worktree del host (desde el worker)."""
+    """
+    Ejecuta un comando shell con cwd en el worktree del host (desde el worker).
+    Si `env` se pasa, se mergea sobre os.environ (los valores pasados ganan).
+    """
     log.info("Running service command: %s (cwd=%s)", command, host_worktree_path)
+    full_env = os.environ.copy()
+    if env:
+        full_env.update(env)
     try:
         result = subprocess.run(
             command,
@@ -38,6 +48,7 @@ def run_service_command(
             capture_output=True,
             text=True,
             timeout=timeout_sec,
+            env=full_env,
         )
         return ServiceResult(
             success=(result.returncode == 0),

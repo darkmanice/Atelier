@@ -1,0 +1,47 @@
+{% if not tasks %}
+<div class="empty-state">
+  No hay tareas todavía.
+  <span class="sub">crea la primera desde el formulario de arriba</span>
+</div>
+{% else %}
+<div class="panel" style="padding: 4px 16px;">
+  <table class="ledger">
+    <thead>
+      <tr>
+        <th style="width: 7.5rem;">Estado</th>
+        <th style="width: 5rem;">Task</th>
+        <th>Prompt</th>
+        <th style="width: 10rem;">Creado</th>
+        <th style="width: 4rem; text-align:center;">Preview</th>
+        <th style="width: 5rem;"></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in tasks %}
+      <tr>
+        <td><span class="state state-{{ t.state }}">{{ t.state }}</span></td>
+        <td>
+          {% if t.task_id %}
+            <span class="taskid">#{{ t.task_id }}</span>
+          {% else %}
+            <span class="dash">—</span>
+          {% endif %}
+        </td>
+        <td class="prompt-cell" title="{{ t.prompt }}">{{ t.prompt or '(sin prompt)' }}</td>
+        <td><span class="timestamp">{{ t.created[:19].replace('T', ' ') if t.created else '—' }}</span></td>
+        <td style="text-align:center;">
+          {% if t.preview_url %}
+            <a href="{{ t.preview_url }}" target="_blank" rel="noopener" class="preview-link" title="Abrir preview">↗</a>
+          {% else %}
+            <span class="dash">—</span>
+          {% endif %}
+        </td>
+        <td style="text-align:right;">
+          <a href="/ui/tasks/{{ t.id }}" class="btn small ghost">Abrir</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

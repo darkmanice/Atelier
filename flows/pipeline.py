@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from string import Template
 from typing import Optional
 
 from prefect import flow, get_run_logger, task
@@ -24,6 +25,7 @@ from prefect.tasks import exponential_backoff
 
 from agents.models import AgentResult, AgentRole, TaskInput
 from orchestrator import logger as tasklog
+from orchestrator import preview as preview_state
 from orchestrator.config import DEFAULT_MODEL, OLLAMA_HOST_FROM_CONTAINER
 from orchestrator.container import run_agent
 from orchestrator.runner import (
@@ -261,6 +263,52 @@ def task_e2e_tests(worktree: dict, config_dict: dict | None) -> dict:
     return _finalize_test_result(result, "E2E tests", logger)
 
 
+@task(name="preview-up")
+def task_preview_up(task_id: int, worktree: dict, config_dict: dict | None) -> dict:
+    """
+    Levanta la preview tras todos los gates OK. Asigna un puerto libre, ejecuta
+    `preview.up` con cwd=host_worktree y PIPELINE_TASK_ID / PIPELINE_PREVIEW_PORT
+    como env. Persiste un sidecar con lo necesario para el teardown.
+    """
+    logger = get_run_logger()
+    if not config_dict or not config_dict.get("preview"):
+        logger.info("No preview section; skipping")
+        return {"started": False}
+
+    cfg = config_dict["preview"]
+    port = preview_state.allocate_port()
+    env = {
+        "PIPELINE_TASK_ID": str(task_id),
+        "PIPELINE_PREVIEW_PORT": str(port),
+    }
+    logger.info(f"Preview up: {cfg['up']} (port {port})")
+
+    res = run_service_command(
+        cfg["up"],
+        Path(worktree["host_path"]),
+        timeout_sec=cfg.get("timeout", 180),
+        env=env,
+    )
+    if not res.success:
+        logger.error(f"Preview up FAILED: {(res.stderr or '')[-500:]}")
+        tasklog.append_orchestrator(task_id, f"Preview up failed: {(res.stderr or '')[-200:]}")
+        return {"started": False, "error": res.stderr[-500:] if res.stderr else ""}
+
+    url = Template(cfg["url"]).safe_substitute(env)
+    preview_state.save_sidecar(task_id, {
+        "task_id": task_id,
+        "port": port,
+        "url": url,
+        "down": cfg["down"],
+        "host_worktree_path": str(worktree["host_path"]),
+        "env": env,
+    })
+
+    logger.info(f"Preview running at {url}")
+    tasklog.append_orchestrator(task_id, f"Preview available at {url}")
+    return {"started": True, "url": url, "port": port}
+
+
 @task(name="e2e-teardown")
 def task_e2e_teardown(worktree: dict, config_dict: dict | None) -> dict:
     """Tira servicios E2E. Siempre se ejecuta (incluso si los tests fallaron)."""
@@ -418,7 +466,10 @@ def pipeline_flow(
         # Si el for se agota sin break (no debería llegar aquí por las RuntimeError de arriba)
         raise RuntimeError("Max retries exhausted")
 
-    # 5. Done
+    # 5. Preview (opcional): levanta el proyecto con los cambios para revisar.
+    preview_info = task_preview_up(task_id, worktree, config_dict)
+
+    # 6. Done
     diff_stat = get_diff_summary(Path(worktree["container_path"]), base_branch)
     tasklog.append_final(task_id, "done", "All gates passed", diff_stat)
 
@@ -427,4 +478,40 @@ def pipeline_flow(
         "state": "done",
         "commits": total_commits,
         "diff_stat": diff_stat,
+        "preview": preview_info,
+    }
+
+
+# ---------------------------
+# Flow de teardown de preview
+# ---------------------------
+
+@flow(name="teardown-preview", log_prints=True)
+def teardown_preview_flow(task_id: int) -> dict:
+    """
+    Tira la preview de una tarea concreta. Lo dispara el orchestrator en respuesta
+    a DELETE /tasks/{id}/preview. Corre en el worker porque es quien tiene el
+    socket Docker y el worktree montado.
+    """
+    logger = get_run_logger()
+    state = preview_state.load_sidecar(task_id)
+    if state is None:
+        logger.info(f"No preview sidecar for task {task_id}; nothing to teardown")
+        return {"success": True, "task_id": task_id, "already_torn_down": True}
+
+    logger.info(f"Preview down: {state['down']} (task {task_id}, port {state['port']})")
+    res = run_service_command(
+        state["down"],
+        Path(state["host_worktree_path"]),
+        timeout_sec=300,
+        env=state.get("env") or {},
+    )
+    preview_state.delete_sidecar(task_id)
+    if not res.success:
+        logger.warning(f"Preview down had issues: {(res.stderr or '')[-500:]}")
+    tasklog.append_orchestrator(task_id, f"Preview torn down (success={res.success})")
+    return {
+        "success": res.success,
+        "task_id": task_id,
+        "stderr": (res.stderr or "")[-500:],
     }

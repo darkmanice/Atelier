@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Task #{{ task.task_id }} · pipeline-ia{% endblock %}
+{% block content %}
+
+<a href="/" class="back-link">← volver al ledger</a>
+
+<section class="dossier">
+  <div class="title-row">
+    <h1>Task <span class="mono">#{{ task.task_id or '—' }}</span></h1>
+    <span class="state state-{{ task.state }}">{{ task.state }}</span>
+  </div>
+
+  <div class="meta-row">
+    {% if task.created %}
+    <span>Creado<strong>{{ task.created }}</strong></span>
+    {% endif %}
+    <span>Branch<strong><code>{{ task.feature_branch or '—' }}</code></strong></span>
+    <span>Model<strong><code>{{ task.model or '—' }}</code></strong></span>
+    <span>Flow run<strong><a href="{{ task.ui_url }}" target="_blank" rel="noopener"><code>{{ task.id[:8] }}…</code> ↗</a></strong></span>
+  </div>
+
+  {% if task.prompt %}
+  <p class="prompt">{{ task.prompt }}</p>
+  {% endif %}
+
+  {% if task.state in ("Scheduled", "Pending", "Running", "Paused") %}
+  <div>
+    <form method="post" action="/ui/tasks/{{ task.id }}/cancel" style="margin: 0;">
+      <button type="submit" class="btn danger small">Cancelar tarea</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+
+{% if preview %}
+<section class="section">
+  <div class="preview-card">
+    <span class="label">● Preview activa</span>
+    <div>
+      <a href="{{ preview.url }}" target="_blank" rel="noopener" class="url">{{ preview.url }}</a>
+      <span class="port">puerto <code>{{ preview.port }}</code></span>
+    </div>
+    <form method="post" action="/ui/tasks/{{ task.id }}/preview/teardown" style="margin: 0;">
+      <button type="submit" class="btn small ghost">Tirar preview</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Log</h2>
+    <span class="section-meta">task-{{ task.task_id }}.md</span>
+  </div>
+
+  {% if log_html %}
+    <div class="log-filter" id="log-filter" role="tablist" aria-label="Filtrar por agente"></div>
+    <div class="log-content" id="log-content">
+      {{ log_html | safe }}
+    </div>
+    <script>
+      (function () {
+        const EM_DASH = '—';
+        const logEl = document.getElementById('log-content');
+        const filterEl = document.getElementById('log-filter');
+        if (!logEl || !filterEl) return;
+
+        // Group top-level children into blocks, keyed by agent role.
+        const children = Array.from(logEl.children);
+        const blocks = [];
+        let current = null;
+
+        for (const el of children) {
+          const tag = el.tagName;
+          if (tag === 'H3') {
+            // Agent section: "implementer — ✅ done"
+            const role = el.textContent.split(EM_DASH)[0].trim().toLowerCase() || 'desconocido';
+            current = { role, kind: 'agent', elements: [el] };
+            blocks.push(current);
+          } else if (tag === 'BLOCKQUOTE') {
+            // Orchestrator notes — merge consecutive ones into a single block.
+            if (current && current.role === 'orchestrator') {
+              current.elements.push(el);
+            } else {
+              current = { role: 'orchestrator', kind: 'agent', elements: [el] };
+              blocks.push(current);
+            }
+          } else if (tag === 'H1' || tag === 'H2') {
+            current = { role: 'meta', kind: 'meta', elements: [el] };
+            blocks.push(current);
+          } else if (current) {
+            current.elements.push(el);
+          } else {
+            current = { role: 'meta', kind: 'meta', elements: [el] };
+            blocks.push(current);
+          }
+        }
+
+        // Wrap each block with a div carrying data-agent / data-kind.
+        for (const b of blocks) {
+          const wrap = document.createElement('div');
+          wrap.className = 'log-block';
+          wrap.dataset.agent = b.role;
+          wrap.dataset.kind = b.kind;
+          const first = b.elements[0];
+          first.parentNode.insertBefore(wrap, first);
+          for (const el of b.elements) wrap.appendChild(el);
+        }
+
+        // Collect unique agent roles + their counts (agent blocks only).
+        const counts = new Map();
+        for (const b of blocks) {
+          if (b.kind !== 'agent') continue;
+          counts.set(b.role, (counts.get(b.role) || 0) + 1);
+        }
+
+        // If no agent has run yet, hide the filter bar entirely.
+        if (counts.size === 0) {
+          filterEl.style.display = 'none';
+          return;
+        }
+
+        // Order: orchestrator first, then implementer/reviewer/simplifier, then others.
+        const ORDER = ['orchestrator', 'implementer', 'reviewer', 'simplifier'];
+        const roles = [...counts.keys()].sort((a, b) => {
+          const ia = ORDER.indexOf(a); const ib = ORDER.indexOf(b);
+          if (ia === -1 && ib === -1) return a.localeCompare(b);
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        });
+
+        const makeChip = (label, value, total, active) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'log-chip' + (active ? ' active' : '');
+          b.dataset.value = value;
+          b.setAttribute('role', 'tab');
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+          b.innerHTML = label + (total !== null ? ' <span class="count">' + total + '</span>' : '');
+          b.addEventListener('click', () => applyFilter(value, b));
+          return b;
+        };
+
+        const totalAgents = [...counts.values()].reduce((a, b) => a + b, 0);
+        const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+        filterEl.appendChild(makeChip('Todos', 'all', totalAgents, true));
+        for (const r of roles) filterEl.appendChild(makeChip(cap(r), r, counts.get(r), false));
+
+        function applyFilter(value, chipEl) {
+          filterEl.querySelectorAll('.log-chip').forEach(c => {
+            const on = c === chipEl;
+            c.classList.toggle('active', on);
+            c.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+          logEl.querySelectorAll('.log-block').forEach(el => {
+            if (el.dataset.kind === 'meta') { el.style.display = ''; return; }
+            el.style.display = (value === 'all' || el.dataset.agent === value) ? '' : 'none';
+          });
+        }
+      })();
+    </script>
+  {% else %}
+    <div class="empty-state">
+      Aún no hay log.
+      <span class="sub">el worker todavía no ha escrito nada</span>
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}

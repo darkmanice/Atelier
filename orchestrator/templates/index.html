@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Nueva tarea</h2>
+    <span class="section-meta">fire-and-forget · {{ default_model }}</span>
+  </div>
+
+  <form method="post" action="/ui/tasks" class="panel">
+    <div class="field">
+      <label class="field-label" for="prompt">Prompt</label>
+      <textarea id="prompt" name="prompt" rows="4" required
+                placeholder="Add a GET /api/ping endpoint that returns {&quot;pong&quot;: true}…"></textarea>
+      <div class="prompt-toolbar">
+        <label class="file-picker" id="prompt-file-picker">
+          <span class="glyph">+</span>
+          <span id="prompt-file-label">Cargar desde archivo .md</span>
+          <input type="file" id="prompt_file" accept=".md,.markdown,text/markdown,text/plain">
+        </label>
+        <span class="prompt-char-count"><span id="prompt-char-count">0</span> caracteres</span>
+      </div>
+    </div>
+
+    <div class="field-grid">
+      <div class="field">
+        <label class="field-label" for="repo_path-input">Repo</label>
+        <div class="combobox" data-for="repo_path">
+          <input type="text" class="combobox-input field-input" id="repo_path-input"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Escribe para filtrar…">
+          <div class="combobox-listbox" role="listbox" hidden></div>
+        </div>
+        <select id="repo_path" name="repo_path" required class="combobox-source"
+                hx-get="/ui/repos" hx-trigger="load" hx-swap="innerHTML"
+                tabindex="-1" aria-hidden="true">
+          <option value="target-repo" selected>target-repo</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="base_branch-input">Base branch</label>
+        <div class="combobox" data-for="base_branch">
+          <input type="text" class="combobox-input field-input" id="base_branch-input"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Escribe para filtrar…">
+          <div class="combobox-listbox" role="listbox" hidden></div>
+        </div>
+        <select id="base_branch" name="base_branch" required class="combobox-source"
+                hx-get="/ui/branches"
+                hx-trigger="load, change from:#repo_path delay:200ms"
+                hx-include="#repo_path"
+                hx-swap="innerHTML"
+                tabindex="-1" aria-hidden="true">
+          <option value="main" selected>main</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="model-input">Model</label>
+        <div class="combobox" data-for="model">
+          <input type="text" class="combobox-input field-input" id="model-input"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Escribe para filtrar…">
+          <div class="combobox-listbox" role="listbox" hidden></div>
+        </div>
+        <select id="model" name="model" required class="combobox-source"
+                hx-get="/ui/models" hx-trigger="load" hx-swap="innerHTML"
+                tabindex="-1" aria-hidden="true">
+          <option value="{{ default_model }}" selected>{{ default_model }}</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="actions">
+      <span class="legend">implementer → reviewer → simplifier → tests</span>
+      <button type="submit" class="btn">Lanzar tarea</button>
+    </div>
+  </form>
+
+  <script>
+    (function () {
+      const promptEl = document.getElementById('prompt');
+      const fileEl = document.getElementById('prompt_file');
+      const pickerEl = document.getElementById('prompt-file-picker');
+      const labelEl = document.getElementById('prompt-file-label');
+      const countEl = document.getElementById('prompt-char-count');
+
+      const updateCount = () => {
+        countEl.textContent = promptEl.value.length.toLocaleString('es');
+      };
+      promptEl.addEventListener('input', updateCount);
+      updateCount();
+
+      fileEl.addEventListener('change', async () => {
+        const file = fileEl.files && fileEl.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          promptEl.value = text;
+          pickerEl.classList.add('loaded');
+          labelEl.textContent = file.name;
+          updateCount();
+          promptEl.focus();
+        } catch (err) {
+          labelEl.textContent = 'Error leyendo archivo';
+        }
+      });
+    })();
+  </script>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Tareas recientes</h2>
+    <span class="section-meta">auto-refresh · 3s</span>
+  </div>
+
+  <div hx-get="/ui/tasks" hx-trigger="every 3s" hx-swap="innerHTML">
+    {% include "_tasks_list.html" %}
+  </div>
+</section>
+
+{% if previews %}
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Entornos activos</h2>
+    <span class="section-meta">{{ previews|length }} corriendo</span>
+  </div>
+
+  <div class="panel" style="padding: 4px 16px;">
+    <table class="ledger">
+      <thead>
+        <tr>
+          <th style="width: 6rem;">Task</th>
+          <th>URL</th>
+          <th style="width: 6rem;">Puerto</th>
+          <th style="width: 7rem; text-align:right;"></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in previews %}
+        <tr>
+          <td><span class="taskid">#{{ p.task_id }}</span></td>
+          <td>
+            <a href="{{ p.url }}" target="_blank" rel="noopener" class="mono" style="color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 1px;">
+              {{ p.url }}
+            </a>
+          </td>
+          <td><code>{{ p.port }}</code></td>
+          <td style="text-align:right;">
+            {% if p.flow_run_id %}
+            <form method="post" action="/ui/tasks/{{ p.flow_run_id }}/preview/teardown" style="margin:0; display:inline;">
+              <button type="submit" class="btn small ghost">Tirar</button>
+            </form>
+            {% else %}<span class="dash" style="color: var(--text-4); font-size: 12px;">sin flow run</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% endblock %}

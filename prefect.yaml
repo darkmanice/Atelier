@@ -16,3 +16,8 @@ deployments:
     # Respeta PIPELINE_MAX_CONCURRENT de tu .env.
     concurrency_limit: 2
     description: "Pipeline Implementer → Reviewer → Simplifier"
+  - name: default
+    entrypoint: flows/pipeline.py:teardown_preview_flow
+    work_pool:
+      name: pipeline-pool
+    description: "Teardown de preview lanzada por una tarea previa"

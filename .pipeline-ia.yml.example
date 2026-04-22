@@ -32,3 +32,18 @@ e2e_tests:
   command: "pytest tests/e2e"
   teardown: "docker compose -f docker-compose.test.yml down -v"
   timeout: 900
+
+# --- Preview: levanta el proyecto con los cambios aplicados ---
+# Se ejecuta DESPUÉS de que todos los gates hayan pasado. El pipeline asigna
+# automáticamente un puerto libre y lo expone como $PIPELINE_PREVIEW_PORT.
+# Varias previews pueden coexistir; cada una en un puerto distinto.
+#
+# El URL resultante queda disponible en GET /tasks/{id}/preview y la preview
+# se tira con DELETE /tasks/{id}/preview.
+#
+# Tu docker-compose.preview.yml debe mapear "${PIPELINE_PREVIEW_PORT}:<puerto interno>".
+preview:
+  up: "docker compose -f docker-compose.preview.yml up -d --wait"
+  down: "docker compose -f docker-compose.preview.yml down -v"
+  url: "http://localhost:${PIPELINE_PREVIEW_PORT}"
+  timeout: 180

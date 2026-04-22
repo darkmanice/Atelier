@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}pipeline-ia{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&display=swap">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    :root {
+      /* Backgrounds — luminance stacking */
+      --bg: #08090a;
+      --bg-panel: #0f1011;
+      --bg-elev: #191a1b;
+      --bg-hover: #1e1f21;
+
+      /* Text tiers */
+      --text: #f7f8f8;
+      --text-2: #d0d6e0;
+      --text-3: #8a8f98;
+      --text-4: #62666d;
+
+      /* Brand indigo — only chromatic color */
+      --accent: #5e6ad2;
+      --accent-2: #7170ff;
+      --accent-hover: #828fff;
+
+      /* Borders — semi-transparent white */
+      --border: rgba(255, 255, 255, 0.08);
+      --border-subtle: rgba(255, 255, 255, 0.05);
+      --border-solid: #23252a;
+
+      /* Status hues (reserved for indicators only) */
+      --success: #10b981;
+      --warn: #f59e0b;
+      --danger: #f56565;
+      --info: #7170ff;
+
+      /* Radii */
+      --r-sm: 4px;
+      --r-md: 6px;
+      --r-lg: 8px;
+      --r-xl: 12px;
+      --r-pill: 9999px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      font-feature-settings: "cv01", "ss03";
+      font-size: 15px;
+      font-weight: 400;
+      line-height: 1.5;
+      letter-spacing: -0.165px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      min-height: 100vh;
+    }
+
+    code, .mono {
+      font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace;
+      font-size: 0.9em;
+      font-feature-settings: normal;
+    }
+
+    a { color: var(--text); text-decoration: none; }
+
+    .shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    /* ─────────── Masthead ─────────── */
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .wordmark {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 10px;
+      color: var(--text);
+    }
+    .wordmark .mark {
+      font-size: 16px;
+      font-weight: 590;
+      letter-spacing: -0.24px;
+    }
+    .wordmark .tag {
+      font-size: 12px;
+      font-weight: 510;
+      color: var(--text-3);
+      letter-spacing: normal;
+    }
+    .masthead-nav {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 510;
+    }
+    .masthead-nav a {
+      color: var(--text-2);
+      transition: color 120ms ease;
+    }
+    .masthead-nav a:hover { color: var(--text); }
+
+    /* ─────────── Sections ─────────── */
+    .section { margin-bottom: 40px; }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 20px;
+      font-weight: 590;
+      letter-spacing: -0.24px;
+      color: var(--text);
+      margin: 0;
+      line-height: 1.33;
+    }
+    .section-meta {
+      font-size: 13px;
+      color: var(--text-3);
+      font-weight: 400;
+      letter-spacing: -0.13px;
+    }
+
+    /* ─────────── Panel ─────────── */
+    .panel {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 20px;
+    }
+
+    /* ─────────── Form ─────────── */
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .field-label,
+    .field > label {
+      font-size: 13px;
+      font-weight: 510;
+      color: var(--text-2);
+      letter-spacing: -0.13px;
+    }
+
+    .field input[type=text],
+    .field textarea,
+    .field select {
+      width: 100%;
+      background-color: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      padding: 9px 12px;
+      color: var(--text);
+      font-family: inherit;
+      font-feature-settings: "cv01", "ss03";
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: -0.13px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+    }
+    .field input[type=text]:hover,
+    .field textarea:hover,
+    .field select:hover {
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+    .field input[type=text]:focus,
+    .field textarea:focus,
+    .field select:focus {
+      border-color: var(--accent-2);
+      background-color: rgba(255, 255, 255, 0.03);
+      box-shadow: 0 0 0 3px rgba(113, 112, 255, 0.18);
+    }
+    .field input::placeholder,
+    .field textarea::placeholder {
+      color: var(--text-4);
+    }
+    .field textarea {
+      min-height: 96px;
+      resize: vertical;
+      font-family: inherit;
+    }
+
+    .field select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M1 1.5L6 6.5L11 1.5'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      background-size: 10px 7px;
+      padding-right: 32px;
+      cursor: pointer;
+    }
+    .field select option {
+      background: var(--bg-elev);
+      color: var(--text);
+    }
+    .field select:disabled { color: var(--text-4); cursor: not-allowed; }
+
+    /* ─────────── Combobox ─────────── */
+    .combobox {
+      position: relative;
+      width: 100%;
+    }
+    .combobox-input {
+      width: 100%;
+      padding-right: 32px !important;
+      cursor: text;
+    }
+    .combobox::after {
+      content: "";
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      width: 10px;
+      height: 7px;
+      margin-top: -3.5px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M1 1.5L6 6.5L11 1.5'/></svg>");
+      background-repeat: no-repeat;
+      background-size: 10px 7px;
+      pointer-events: none;
+      opacity: 0.85;
+    }
+    .combobox.is-open::after {
+      transform: rotate(180deg);
+    }
+    .combobox-listbox {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 50;
+      padding: 4px;
+      box-shadow:
+        rgba(0, 0, 0, 0.08) 0px 0px 1px,
+        rgba(0, 0, 0, 0.18) 0px 4px 12px,
+        rgba(0, 0, 0, 0.25) 0px 12px 28px;
+    }
+    .combobox-listbox[hidden] { display: none; }
+    .combobox-option {
+      padding: 6px 10px;
+      border-radius: var(--r-sm);
+      color: var(--text-2);
+      font-size: 14px;
+      line-height: 1.4;
+      cursor: pointer;
+      user-select: none;
+      font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+      font-feature-settings: normal;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .combobox-option:hover,
+    .combobox-option.is-highlighted {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+    .combobox-option.is-selected {
+      color: var(--accent-hover);
+    }
+    .combobox-option.is-selected::before {
+      content: "✓";
+      display: inline-block;
+      width: 14px;
+      margin-right: 4px;
+      color: var(--accent-2);
+      font-weight: 510;
+    }
+    .combobox-option:not(.is-selected)::before {
+      content: "";
+      display: inline-block;
+      width: 14px;
+      margin-right: 4px;
+    }
+    .combobox-option mark {
+      background: transparent;
+      color: var(--accent-hover);
+      font-weight: 510;
+    }
+    .combobox-empty {
+      padding: 10px;
+      color: var(--text-4);
+      font-size: 13px;
+      font-style: italic;
+    }
+    /* Hide native select — keep in DOM for HTMX + form submission */
+    select.combobox-source {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+    @media (max-width: 780px) {
+      .field-grid { grid-template-columns: 1fr; }
+    }
+
+    /* File picker */
+    .prompt-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-3);
+      font-weight: 400;
+    }
+    .file-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      padding: 4px 10px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 510;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .file-picker:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.14);
+      color: var(--text);
+    }
+    .file-picker input[type=file] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .file-picker .glyph { color: var(--text-3); font-weight: 400; }
+    .file-picker.loaded { border-color: rgba(16, 185, 129, 0.32); color: var(--success); }
+    .file-picker.loaded .glyph { color: var(--success); }
+    .prompt-char-count { font-variant-numeric: tabular-nums; color: var(--text-4); }
+
+    /* Actions */
+    .actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .actions .legend {
+      font-size: 12px;
+      color: var(--text-3);
+      font-weight: 400;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent);
+      color: #fff;
+      border: 1px solid var(--accent);
+      border-radius: var(--r-md);
+      padding: 7px 14px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 510;
+      letter-spacing: -0.13px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .btn:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #fff;
+    }
+    .btn.ghost {
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .btn.ghost:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+    .btn.danger {
+      background: transparent;
+      color: var(--danger);
+      border-color: rgba(245, 101, 101, 0.35);
+    }
+    .btn.danger:hover {
+      background: rgba(245, 101, 101, 0.1);
+      color: #ff7a7a;
+      border-color: rgba(245, 101, 101, 0.6);
+    }
+    .btn.small {
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+
+    /* ─────────── State chips ─────────── */
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 510;
+      padding: 2px 10px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-solid);
+      background: transparent;
+      color: var(--text-2);
+      letter-spacing: normal;
+      white-space: nowrap;
+    }
+    .state::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: 0 0 6px;
+    }
+    .state-Running { color: var(--accent-2); }
+    .state-Running::before { animation: pulse 1.6s ease-in-out infinite; }
+    .state-Pending, .state-Scheduled { color: var(--warn); }
+    .state-Completed { color: var(--success); }
+    .state-Failed, .state-Crashed { color: var(--danger); }
+    .state-Cancelled, .state-Cancelling { color: var(--text-3); }
+    .state-Paused { color: var(--warn); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    /* ─────────── Ledger table ─────────── */
+    .ledger {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .ledger thead th {
+      text-align: left;
+      font-size: 12px;
+      font-weight: 510;
+      color: var(--text-3);
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: normal;
+    }
+    .ledger tbody td {
+      padding: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-2);
+      vertical-align: middle;
+    }
+    .ledger tbody tr { transition: background 120ms ease; }
+    .ledger tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+    .ledger tbody tr:last-child td { border-bottom: 0; }
+
+    .ledger .taskid {
+      font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .ledger .prompt-cell {
+      max-width: 44ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ledger .timestamp {
+      font-variant-numeric: tabular-nums;
+      color: var(--text-3);
+      font-size: 13px;
+    }
+    .ledger .preview-link {
+      color: var(--accent-2);
+      font-weight: 510;
+    }
+    .ledger .preview-link:hover { color: var(--accent-hover); }
+    .ledger .dash { color: var(--text-4); }
+
+    /* ─────────── Empty state ─────────── */
+    .empty-state {
+      padding: 48px 24px;
+      text-align: center;
+      color: var(--text-3);
+      font-size: 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-lg);
+    }
+    .empty-state .sub {
+      display: block;
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--text-4);
+    }
+
+    /* ─────────── Preview card ─────────── */
+    .preview-card {
+      background: rgba(16, 185, 129, 0.04);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: var(--r-lg);
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .preview-card .label {
+      font-size: 12px;
+      font-weight: 510;
+      color: var(--success);
+      letter-spacing: normal;
+    }
+    .preview-card .url {
+      color: var(--text);
+      font-weight: 510;
+      font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+      font-size: 14px;
+    }
+    .preview-card .url:hover { color: var(--accent-2); }
+    .preview-card .port {
+      color: var(--text-3);
+      font-size: 13px;
+      margin-left: 10px;
+    }
+
+    /* ─────────── Task detail ─────────── */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-3);
+      font-weight: 510;
+      margin-bottom: 24px;
+      transition: color 120ms ease;
+    }
+    .back-link:hover { color: var(--text); }
+
+    .dossier {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .dossier .title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .dossier h1 {
+      font-size: 24px;
+      font-weight: 590;
+      letter-spacing: -0.288px;
+      margin: 0;
+      color: var(--text);
+      line-height: 1.33;
+    }
+    .dossier h1 .mono {
+      font-size: 22px;
+      color: var(--text-2);
+      font-weight: 510;
+    }
+    .dossier .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 24px;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .dossier .meta-row strong {
+      color: var(--text-2);
+      font-weight: 510;
+      margin-left: 4px;
+    }
+    .dossier .meta-row a { color: var(--accent-2); }
+    .dossier .meta-row a:hover { color: var(--accent-hover); }
+    .dossier .prompt {
+      color: var(--text-2);
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 72ch;
+    }
+
+    /* ─────────── Log ─────────── */
+    .log-content {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 20px 24px;
+      max-height: 70vh;
+      overflow: auto;
+      color: var(--text-2);
+      font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .log-content h1, .log-content h2, .log-content h3 {
+      font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+      color: var(--text);
+      margin-top: 1.2em;
+      margin-bottom: 0.4em;
+      letter-spacing: -0.24px;
+    }
+    .log-content h1 {
+      font-size: 20px;
+      font-weight: 590;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.3em;
+    }
+    .log-content h2 { font-size: 17px; font-weight: 590; }
+    .log-content h3 { font-size: 15px; font-weight: 510; color: var(--text-2); }
+    .log-content pre {
+      background: var(--bg);
+      color: var(--text);
+      padding: 12px 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      overflow-x: auto;
+      margin: 10px 0;
+      font-size: 12.5px;
+    }
+    .log-content code {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 1px 6px;
+      border-radius: var(--r-sm);
+      color: var(--accent-2);
+      font-size: 0.92em;
+    }
+    .log-content pre code { background: transparent; color: inherit; padding: 0; }
+    .log-content details {
+      margin: 10px 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      padding: 8px 12px;
+    }
+    .log-content details[open] { background: rgba(255, 255, 255, 0.02); }
+    .log-content summary {
+      cursor: pointer;
+      font-weight: 510;
+      color: var(--text);
+    }
+    .log-content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+    .log-content th, .log-content td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      text-align: left;
+    }
+    .log-content th { color: var(--text-3); font-weight: 510; font-size: 12px; }
+    .log-content a { color: var(--accent-2); }
+    .log-content a:hover { color: var(--accent-hover); }
+
+    /* Agent filter chips */
+    .log-filter {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .log-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: inherit;
+      font-feature-settings: "cv01", "ss03";
+      font-size: 12px;
+      font-weight: 510;
+      padding: 3px 12px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-solid);
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .log-chip .count {
+      color: var(--text-4);
+      font-variant-numeric: tabular-nums;
+    }
+    .log-chip:hover {
+      background: rgba(255, 255, 255, 0.02);
+      border-color: rgba(255, 255, 255, 0.14);
+      color: var(--text);
+    }
+    .log-chip.active {
+      background: rgba(113, 112, 255, 0.12);
+      border-color: rgba(113, 112, 255, 0.4);
+      color: var(--accent-hover);
+    }
+    .log-chip.active .count { color: var(--accent-hover); }
+
+    .log-block { display: block; }
+    .log-block[data-kind="agent"] { scroll-margin-top: 12px; }
+
+    /* Scrollbars (dark) */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.12); background-clip: padding-box; border: 2px solid transparent; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <a class="wordmark" href="/">
+        <span class="mark">pipeline-ia</span>
+        <span class="tag">multi-agent code modification</span>
+      </a>
+      <nav class="masthead-nav">
+        <a href="http://localhost:4200" target="_blank" rel="noopener">Prefect ↗</a>
+      </nav>
+    </header>
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <script>
+    (function () {
+      const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+
+      class Combobox {
+        constructor(root) {
+          this.root = root;
+          this.input = root.querySelector('.combobox-input');
+          this.listbox = root.querySelector('.combobox-listbox');
+          this.select = document.getElementById(root.dataset.for);
+          if (!this.input || !this.listbox || !this.select) return;
+
+          this.options = [];
+          this.highlighted = -1;
+          this.isOpen = false;
+          this.dirty = false;
+
+          this.bindEvents();
+          this.syncFromSelect();
+
+          // Re-sync when HTMX populates the select (load, change trigger).
+          this.select.addEventListener('htmx:afterSwap', () => this.syncFromSelect());
+        }
+
+        syncFromSelect() {
+          this.options = Array.from(this.select.options).filter(o => !o.disabled && o.value !== '');
+          const current = this.select.options[this.select.selectedIndex];
+          this.input.value = current ? current.textContent.trim() : '';
+          this.dirty = false;
+          this.renderListbox('');
+        }
+
+        renderListbox(filterText) {
+          const f = (filterText || '').trim().toLowerCase();
+          this.listbox.innerHTML = '';
+          this.highlighted = -1;
+
+          const matches = this.options.filter(o => !f || o.textContent.toLowerCase().includes(f));
+
+          if (matches.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'combobox-empty';
+            empty.textContent = this.options.length === 0 ? 'Sin opciones disponibles' : 'Sin coincidencias';
+            this.listbox.appendChild(empty);
+            return;
+          }
+
+          for (const opt of matches) {
+            const label = opt.textContent.trim();
+            const value = opt.value;
+            const item = document.createElement('div');
+            item.className = 'combobox-option';
+            item.setAttribute('role', 'option');
+            item.dataset.value = value;
+            if (value === this.select.value) item.classList.add('is-selected');
+
+            if (f) {
+              const idx = label.toLowerCase().indexOf(f);
+              const before = label.slice(0, idx);
+              const match = label.slice(idx, idx + f.length);
+              const after = label.slice(idx + f.length);
+              item.innerHTML = `${escapeHtml(before)}<mark>${escapeHtml(match)}</mark>${escapeHtml(after)}`;
+            } else {
+              item.textContent = label;
+            }
+
+            item.addEventListener('mousedown', e => {
+              e.preventDefault();
+              this.choose(value, label);
+            });
+            item.addEventListener('mouseenter', () => {
+              const items = Array.from(this.listbox.querySelectorAll('.combobox-option'));
+              this.setHighlight(items.indexOf(item));
+            });
+
+            this.listbox.appendChild(item);
+          }
+        }
+
+        setHighlight(i) {
+          const items = this.listbox.querySelectorAll('.combobox-option');
+          items.forEach((el, idx) => el.classList.toggle('is-highlighted', idx === i));
+          this.highlighted = i;
+          if (i >= 0 && items[i]) items[i].scrollIntoView({ block: 'nearest' });
+        }
+
+        move(delta) {
+          const items = this.listbox.querySelectorAll('.combobox-option');
+          if (items.length === 0) return;
+          let next = this.highlighted + delta;
+          if (next < 0) next = items.length - 1;
+          if (next >= items.length) next = 0;
+          this.setHighlight(next);
+        }
+
+        choose(value, label) {
+          this.select.value = value;
+          this.select.dispatchEvent(new Event('change', { bubbles: true }));
+          this.input.value = label;
+          this.dirty = false;
+          this.close(true);
+        }
+
+        open() {
+          if (this.isOpen) return;
+          this.isOpen = true;
+          this.listbox.hidden = false;
+          this.root.classList.add('is-open');
+          // Highlight the currently-selected option on open
+          const items = Array.from(this.listbox.querySelectorAll('.combobox-option'));
+          const idx = items.findIndex(el => el.dataset.value === this.select.value);
+          if (idx >= 0) this.setHighlight(idx);
+        }
+
+        close(chose = false) {
+          this.isOpen = false;
+          this.listbox.hidden = true;
+          this.root.classList.remove('is-open');
+          if (!chose && this.dirty) {
+            // Typed text that didn't end in a choice → restore label
+            const current = this.select.options[this.select.selectedIndex];
+            this.input.value = current ? current.textContent.trim() : '';
+            this.dirty = false;
+            this.renderListbox('');
+          }
+        }
+
+        bindEvents() {
+          this.input.addEventListener('focus', () => { this.input.select(); this.open(); });
+          this.input.addEventListener('mousedown', () => { if (!this.isOpen) requestAnimationFrame(() => this.open()); });
+          this.input.addEventListener('input', () => {
+            this.dirty = true;
+            this.renderListbox(this.input.value);
+            this.open();
+          });
+          this.input.addEventListener('keydown', e => {
+            if (e.key === 'Escape') { this.close(); this.input.blur(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); if (!this.isOpen) this.open(); this.move(1); }
+            else if (e.key === 'ArrowUp')   { e.preventDefault(); if (!this.isOpen) this.open(); this.move(-1); }
+            else if (e.key === 'Enter') {
+              const items = this.listbox.querySelectorAll('.combobox-option');
+              if (this.isOpen && this.highlighted >= 0 && items[this.highlighted]) {
+                e.preventDefault();
+                const el = items[this.highlighted];
+                this.choose(el.dataset.value, el.textContent.replace(/^[✓\s]+/, ''));
+              } else if (this.isOpen && items.length === 1) {
+                e.preventDefault();
+                this.choose(items[0].dataset.value, items[0].textContent.replace(/^[✓\s]+/, ''));
+              }
+            }
+          });
+          document.addEventListener('mousedown', e => {
+            if (!this.root.contains(e.target)) this.close();
+          });
+        }
+      }
+
+      const initAll = () => document.querySelectorAll('.combobox').forEach(el => {
+        if (!el.dataset.comboboxReady) {
+          new Combobox(el);
+          el.dataset.comboboxReady = '1';
+        }
+      });
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAll);
+      } else {
+        initAll();
+      }
+    })();
+  </script>
+</body>
+</html>

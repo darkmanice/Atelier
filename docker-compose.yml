@@ -59,6 +59,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./worktrees:/app/worktrees
+      # Bind mount extra: el worker necesita que el HOST path de los worktrees
+      # sea válido dentro del container para que `subprocess.run(cwd=host_path)`
+      # en services.py funcione (lo usan e2e_setup/teardown y el preview_up).
+      - ${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}:${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}
       - ./logs:/app/logs
       - ${PIPELINE_REPOS_HOST:-./repos}:/repos
     environment:
