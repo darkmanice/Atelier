@@ -22,27 +22,36 @@
       </div>
     </div>
 
-    <div class="field-grid">
-      <div class="field">
-        <label class="field-label" for="repo_path-input">Repo</label>
-        <div class="combobox" data-for="repo_path">
-          <input type="text" class="combobox-input field-input" id="repo_path-input"
-                 autocomplete="off" spellcheck="false"
-                 placeholder="Escribe para filtrar…">
-          <div class="combobox-listbox" role="listbox" hidden></div>
+    <div class="field field-repo">
+      <label class="field-label">
+        Proyecto
+        <span class="hint-icon" tabindex="0" role="img" aria-label="Ayuda"
+              data-tooltip="Sólo se pueden seleccionar directorios inicializados con git.">ⓘ</span>
+      </label>
+      <div class="tree-picker">
+        <div id="repo-tree-body"
+             hx-get="/ui/fs?path=" hx-trigger="load" hx-swap="innerHTML">
+          <div class="tree-loading">Cargando…</div>
         </div>
-        <select id="repo_path" name="repo_path" required class="combobox-source"
-                hx-get="/ui/repos" hx-trigger="load" hx-swap="innerHTML"
-                tabindex="-1" aria-hidden="true">
-          <option value="target-repo" selected>target-repo</option>
-        </select>
+        <div class="tree-footer">
+          <span class="tree-footer-label">Seleccionado</span>
+          <span class="tree-footer-value empty" id="repo-selected-display">ninguno</span>
+        </div>
       </div>
+      <input type="hidden" id="repo_path" name="repo_path" required>
+    </div>
+
+    <div class="field-grid field-grid-2">
       <div class="field">
-        <label class="field-label" for="base_branch-input">Base branch</label>
+        <label class="field-label" for="base_branch-input">
+          Rama
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Ayuda"
+                data-tooltip="Rama del proyecto a partir de la cual se creará la rama de trabajo de la tarea.">ⓘ</span>
+        </label>
         <div class="combobox" data-for="base_branch">
           <input type="text" class="combobox-input field-input" id="base_branch-input"
                  autocomplete="off" spellcheck="false"
-                 placeholder="Escribe para filtrar…">
+                 placeholder="Selecciona primero un proyecto" disabled>
           <div class="combobox-listbox" role="listbox" hidden></div>
         </div>
         <select id="base_branch" name="base_branch" required class="combobox-source"
@@ -104,6 +113,17 @@
           labelEl.textContent = 'Error leyendo archivo';
         }
       });
+
+      // Enable the branch combobox only when a project has been chosen.
+      const repoInput = document.getElementById('repo_path');
+      const branchInput = document.getElementById('base_branch-input');
+      if (repoInput && branchInput) {
+        const syncBranchEnabled = () => {
+          branchInput.disabled = !repoInput.value;
+        };
+        repoInput.addEventListener('change', syncBranchEnabled);
+        syncBranchEnabled();
+      }
     })();
   </script>
 </section>
