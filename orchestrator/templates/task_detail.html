@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Task #{{ task.task_id }} · pipeline-ia{% endblock %}
+{% block title %}Task #{{ task.task_id }} · atelier{% endblock %}
 {% block content %}
 
-<a href="/" class="back-link">← volver al ledger</a>
+<a href="/" class="back-link">← back to ledger</a>
 
 <section class="dossier">
   <div class="title-row">
@@ -12,7 +12,7 @@
 
   <div class="meta-row">
     {% if task.created %}
-    <span>Creado<strong>{{ task.created }}</strong></span>
+    <span>Created<strong>{{ task.created }}</strong></span>
     {% endif %}
     <span>Branch<strong><code>{{ task.feature_branch or '—' }}</code></strong></span>
     <span>Model<strong><code>{{ task.model or '—' }}</code></strong></span>
@@ -26,7 +26,7 @@
   {% if task.state in ("Scheduled", "Pending", "Running", "Paused") %}
   <div>
     <form method="post" action="/ui/tasks/{{ task.id }}/cancel" style="margin: 0;">
-      <button type="submit" class="btn danger small">Cancelar tarea</button>
+      <button type="submit" class="btn danger small">Cancel task</button>
     </form>
   </div>
   {% endif %}
@@ -35,13 +35,13 @@
 {% if preview %}
 <section class="section">
   <div class="preview-card">
-    <span class="label">● Preview activa</span>
+    <span class="label">● Preview active</span>
     <div>
       <a href="{{ preview.url }}" target="_blank" rel="noopener" class="url">{{ preview.url }}</a>
-      <span class="port">puerto <code>{{ preview.port }}</code></span>
+      <span class="port">port <code>{{ preview.port }}</code></span>
     </div>
     <form method="post" action="/ui/tasks/{{ task.id }}/preview/teardown" style="margin: 0;">
-      <button type="submit" class="btn small ghost">Tirar preview</button>
+      <button type="submit" class="btn small ghost">Tear down preview</button>
     </form>
   </div>
 </section>
@@ -54,7 +54,7 @@
   </div>
 
   {% if log_html %}
-    <div class="log-filter" id="log-filter" role="tablist" aria-label="Filtrar por agente"></div>
+    <div class="log-filter" id="log-filter" role="tablist" aria-label="Filter by agent"></div>
     <div class="log-content" id="log-content">
       {{ log_html | safe }}
     </div>
@@ -74,7 +74,7 @@
           const tag = el.tagName;
           if (tag === 'H3') {
             // Agent section: "implementer — ✅ done"
-            const role = el.textContent.split(EM_DASH)[0].trim().toLowerCase() || 'desconocido';
+            const role = el.textContent.split(EM_DASH)[0].trim().toLowerCase() || 'unknown';
             current = { role, kind: 'agent', elements: [el] };
             blocks.push(current);
           } else if (tag === 'BLOCKQUOTE') {
@@ -144,7 +144,7 @@
 
         const totalAgents = [...counts.values()].reduce((a, b) => a + b, 0);
         const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-        filterEl.appendChild(makeChip('Todos', 'all', totalAgents, true));
+        filterEl.appendChild(makeChip('All', 'all', totalAgents, true));
         for (const r of roles) filterEl.appendChild(makeChip(cap(r), r, counts.get(r), false));
 
         function applyFilter(value, chipEl) {
@@ -162,8 +162,8 @@
     </script>
   {% else %}
     <div class="empty-state">
-      Aún no hay log.
-      <span class="sub">el worker todavía no ha escrito nada</span>
+      No log yet.
+      <span class="sub">the worker hasn't written anything yet</span>
     </div>
   {% endif %}
 </section>

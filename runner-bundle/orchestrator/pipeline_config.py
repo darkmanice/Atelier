@@ -1,8 +1,8 @@
 """
-Esquema del fichero .pipeline-ia.yml que vive en la raíz del repo del usuario.
+Schema for the .atelier.yml file that lives at the root of the user's repo.
 
-Cargado por el runner antes de cada fase. Todas las secciones son opcionales:
-si una no está, esa fase se salta con warning.
+Loaded by the runner before each phase. All sections are optional: if one is
+missing, that phase is skipped with a warning.
 """
 from __future__ import annotations
 
@@ -25,18 +25,18 @@ class TestCommand(BaseModel):
 class E2EConfig(BaseModel):
     setup: str | None = Field(
         default=None,
-        description="Comando para levantar servicios. Ejemplo: 'docker compose up -d'",
+        description="Command to bring up services. Example: 'docker compose up -d'",
     )
     command: str
     teardown: str | None = Field(
         default=None,
-        description="Comando para tirar servicios. Se ejecuta SIEMPRE, incluso si los tests fallan.",
+        description="Command to tear down services. Runs ALWAYS, even if tests fail.",
     )
     timeout: int = 900
 
 
 class PipelineConfig(BaseModel):
-    """Config completo del fichero .pipeline-ia.yml."""
+    """Full config of the .atelier.yml file."""
 
     install: InstallConfig | None = None
     quick_tests: TestCommand | None = None
@@ -44,19 +44,19 @@ class PipelineConfig(BaseModel):
     e2e_tests: E2EConfig | None = None
 
 
-CONFIG_FILENAME = ".pipeline-ia.yml"
+CONFIG_FILENAME = ".atelier.yml"
 
 
 def load_config(worktree_path: Path) -> PipelineConfig | None:
     """
-    Carga el config del worktree.
+    Loads the worktree's config.
 
     Returns:
-        PipelineConfig si existe y es válido.
-        None si el fichero no existe (caller debe emitir warning).
+        PipelineConfig if it exists and is valid.
+        None if the file does not exist (caller must emit a warning).
 
     Raises:
-        ValueError si el fichero existe pero es inválido.
+        ValueError if the file exists but is invalid.
     """
     config_file = worktree_path / CONFIG_FILENAME
     if not config_file.exists():

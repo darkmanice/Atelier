@@ -1,24 +1,25 @@
 """
-Tools que el reviewer y el simplifier pueden invocar.
+Tools that the reviewer and simplifier can invoke.
 
-El implementer NO usa este módulo porque delega en Aider, que ya trae su propio
-set de herramientas más sofisticado (con RAG sobre el repo, aplicación de patches, etc.)
+The implementer does NOT use this module because it delegates to Aider, which
+already brings its own more sophisticated toolset (with RAG over the repo,
+patch application, etc.)
 
-Las definiciones siguen el formato de tool-calling de Ollama (compatible OpenAI).
-Cada función devuelve un string (lo que el agente verá en el siguiente turno).
+The definitions follow the Ollama tool-calling format (OpenAI-compatible).
+Each function returns a string (what the agent will see on the next turn).
 """
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
 
-MAX_FILE_CHARS = 20_000          # corta ficheros enormes al leer
-MAX_DIFF_CHARS = 60_000          # corta diffs enormes
-MAX_LIST_FILES = 200             # corta listings
+MAX_FILE_CHARS = 20_000          # truncate huge files when reading
+MAX_DIFF_CHARS = 60_000          # truncate huge diffs
+MAX_LIST_FILES = 200             # truncate listings
 
 
 # -----------------------
-# Definiciones (schema)
+# Definitions (schema)
 # -----------------------
 
 TOOL_DEFINITIONS = [
@@ -26,13 +27,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "Lista los ficheros del worktree. Útil para orientarse al empezar.",
+            "description": "Lists the files in the worktree. Useful for orienting yourself at the start.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "subpath": {
                         "type": "string",
-                        "description": "Subruta relativa al worktree. Vacío = raíz.",
+                        "description": "Subpath relative to the worktree. Empty = root.",
                     }
                 },
                 "required": [],
@@ -43,13 +44,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Lee el contenido de un fichero del worktree.",
+            "description": "Reads the content of a file in the worktree.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Ruta relativa al worktree.",
+                        "description": "Path relative to the worktree.",
                     }
                 },
                 "required": ["path"],
@@ -60,11 +61,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_diff",
-            "description": "Devuelve el diff entre la rama actual y la rama base. Útil para review.",
+            "description": "Returns the diff between the current branch and the base branch. Useful for review.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "base_branch": {"type": "string", "description": "Rama base (ej: 'main')."},
+                    "base_branch": {"type": "string", "description": "Base branch (e.g. 'main')."},
                 },
                 "required": ["base_branch"],
             },
@@ -74,7 +75,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Sobrescribe un fichero. Solo usar en rol simplifier. Crea directorios si hace falta.",
+            "description": "Overwrites a file. Only use in simplifier role. Creates directories if needed.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -89,7 +90,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "git_commit",
-            "description": "Hace commit de los cambios actuales con el mensaje dado.",
+            "description": "Commits the current changes with the given message.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -104,9 +105,9 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "finish",
             "description": (
-                "Termina la tarea. "
-                "Para reviewer: verdict='approved' o 'changes_requested' + comments. "
-                "Para simplifier: verdict='done' + summary."
+                "End the task. "
+                "For reviewer: verdict='approved' or 'changes_requested' + comments. "
+                "For simplifier: verdict='done' + summary."
             ),
             "parameters": {
                 "type": "object",
@@ -116,7 +117,7 @@ TOOL_DEFINITIONS = [
                         "enum": ["approved", "changes_requested", "done"],
                     },
                     "summary": {"type": "string"},
-                    "comments": {"type": "string", "description": "Feedback detallado."},
+                    "comments": {"type": "string", "description": "Detailed feedback."},
                 },
                 "required": ["verdict", "summary"],
             },
@@ -126,12 +127,12 @@ TOOL_DEFINITIONS = [
 
 
 # -----------------------
-# Implementaciones
+# Implementations
 # -----------------------
 
 
 def _safe_path(worktree: Path, relative: str) -> Path:
-    """Evita escapes del worktree con paths relativos maliciosos."""
+    """Prevents escaping the worktree via malicious relative paths."""
     target = (worktree / relative).resolve()
     worktree_resolved = worktree.resolve()
     if not str(target).startswith(str(worktree_resolved)):
@@ -204,7 +205,7 @@ def git_commit(worktree: Path, message: str) -> str:
             timeout=30,
             check=True,
         )
-        # devolver el hash corto del commit
+        # return the short commit hash
         sha = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=worktree,
@@ -217,7 +218,7 @@ def git_commit(worktree: Path, message: str) -> str:
         return f"ERROR: {e.stderr or e.stdout}"
 
 
-# Dispatcher que el loop ReAct invoca
+# Dispatcher invoked by the ReAct loop
 def dispatch(name: str, arguments: dict, worktree: Path) -> str:
     handlers = {
         "list_files": lambda: list_files(worktree, arguments.get("subpath", "")),

@@ -1,17 +1,17 @@
 """
-Pipeline de agentes como Prefect flow, con gates de tests.
+Agent pipeline as a Prefect flow, with test gates.
 
-Fases:
-  1. install (si hay config)
+Phases:
+  1. install (if there is a config)
   2. implementer
-  3. quick_tests (gate — si falla, feedback al implementer)
+  3. quick_tests (gate — if it fails, feedback goes to the implementer)
   4. reviewer
   5. simplifier
-  6. full_tests (gate — si falla, feedback al implementer)
-  7. setup_services_e2e + e2e_tests + teardown_services_e2e (gate final)
+  6. full_tests (gate — if it fails, feedback goes to the implementer)
+  7. setup_services_e2e + e2e_tests + teardown_services_e2e (final gate)
 
-Cada gate determinista puede devolver al implementer con feedback.
-Número total de iteraciones limitado por MAX_RETRY_ATTEMPTS.
+Each deterministic gate can loop back to the implementer with feedback.
+Total number of iterations limited by MAX_RETRY_ATTEMPTS.
 """
 from __future__ import annotations
 
@@ -38,11 +38,11 @@ from orchestrator.pipeline_config import PipelineConfig, load_config
 from orchestrator.worktree import WorktreeHandle, create_worktree, get_diff_summary
 
 
-MAX_RETRY_ATTEMPTS = int(os.environ.get("PIPELINE_MAX_RETRY_ATTEMPTS", "2"))
+MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "2"))
 
 
 # ---------------------------
-# Tasks — fases de agente
+# Tasks — agent phases
 # ---------------------------
 
 @task(name="create-worktree", retries=1)
@@ -120,7 +120,7 @@ def task_simplifier(task_id: int, prompt: str, base_branch: str, feature_branch:
 
 
 # ---------------------------
-# Tasks — fases de tests
+# Tasks — test phases
 # ---------------------------
 
 @task(name="load-config")
@@ -130,17 +130,17 @@ def task_load_config(worktree: dict) -> dict | None:
     try:
         config = load_config(container_path)
     except ValueError as e:
-        logger.error(f"Invalid .pipeline-ia.yml: {e}")
+        logger.error(f"Invalid .atelier.yml: {e}")
         return None
 
     if config is None:
         logger.warning(
-            ".pipeline-ia.yml not found in repo root. "
+            ".atelier.yml not found in repo root. "
             "No tests will be executed. Pipeline will continue without test gates."
         )
         return None
 
-    logger.info("Loaded .pipeline-ia.yml")
+    logger.info("Loaded .atelier.yml")
     return config.model_dump()
 
 
@@ -204,7 +204,7 @@ def task_full_tests(worktree: dict, config_dict: dict | None) -> dict:
 
 @task(name="e2e-setup")
 def task_e2e_setup(worktree: dict, config_dict: dict | None) -> dict:
-    """Levanta los servicios E2E desde el worker (tiene docker socket)."""
+    """Brings up E2E services from the worker (which has the docker socket)."""
     logger = get_run_logger()
     if not config_dict or not config_dict.get("e2e_tests"):
         return {"success": True, "skipped": True}
@@ -242,7 +242,7 @@ def task_e2e_tests(worktree: dict, config_dict: dict | None) -> dict:
 
 @task(name="e2e-teardown")
 def task_e2e_teardown(worktree: dict, config_dict: dict | None) -> dict:
-    """Tira servicios E2E. Siempre se ejecuta (incluso si los tests fallaron)."""
+    """Tears down E2E services. Always runs (even if the tests failed)."""
     logger = get_run_logger()
     if not config_dict or not config_dict.get("e2e_tests"):
         return {"success": True, "skipped": True}
@@ -260,16 +260,16 @@ def task_e2e_teardown(worktree: dict, config_dict: dict | None) -> dict:
 
 
 # ---------------------------
-# Flow principal
+# Main flow
 # ---------------------------
 
 def _fmt_test_feedback(phase_name: str, result_dict: dict) -> str:
-    """Formatea el output de un test fallido para mandar al implementer."""
+    """Formats the output of a failed test to send to the implementer."""
     result = RunnerResult(**{k: v for k, v in result_dict.items() if k in RunnerResult.__dataclass_fields__})
     return f"{phase_name} failed.\n{result.summary_for_feedback()}"
 
 
-@flow(name="pipeline", log_prints=True)
+@flow(name="atelier", log_prints=True)
 def pipeline_flow(
     task_id: int,
     prompt: str,
@@ -289,14 +289,14 @@ def pipeline_flow(
     # 1. Worktree
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
 
-    # 2. Cargar config de tests
+    # 2. Load test config
     config_dict = task_load_config(worktree)
 
-    # 3. Instalar deps una vez (si hay config de install)
+    # 3. Install deps once (if there is an install config)
     if config_dict:
         task_install(worktree, config_dict)
 
-    # 4. Bucle implementer → quick → reviewer → simplifier → full → e2e
+    # 4. Loop implementer -> quick -> reviewer -> simplifier -> full -> e2e
     feedback: Optional[str] = None
     total_commits: list[str] = []
 
@@ -367,11 +367,11 @@ def pipeline_flow(
                 tasklog.append_final(task_id, "failed", msg, "(no diff)")
                 raise RuntimeError(msg)
 
-        # Gate 3: E2E (con setup + teardown siempre)
+        # Gate 3: E2E (with setup + teardown always)
         if config_dict and config_dict.get("e2e_tests"):
             setup_res = task_e2e_setup(worktree, config_dict)
             if not setup_res["success"]:
-                # Aun así intentamos teardown por limpieza
+                # Still attempt teardown for cleanup
                 task_e2e_teardown(worktree, config_dict)
                 raise RuntimeError(f"E2E setup failed: {setup_res.get('stderr','')[-300:]}")
 
@@ -390,11 +390,11 @@ def pipeline_flow(
                     tasklog.append_final(task_id, "failed", msg, "(no diff)")
                     raise RuntimeError(msg)
 
-        # Todo pasó. Salir del bucle.
+        # Everything passed. Exit the loop.
         break
 
     else:
-        # Si el for se agota sin break (no debería llegar aquí por las RuntimeError de arriba)
+        # If the for loop exhausts without break (should not reach here due to the RuntimeErrors above)
         raise RuntimeError("Max retries exhausted")
 
     # 5. Done

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}pipeline-ia{% endblock %}</title>
+  <title>{% block title %}atelier{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&display=swap">
@@ -626,6 +626,112 @@
     .file-picker.loaded .glyph { color: var(--success); }
     .prompt-char-count { font-variant-numeric: tabular-nums; color: var(--text-4); }
 
+    /* Provider role overrides (details/summary) */
+    .role-overrides {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      background: rgba(255, 255, 255, 0.015);
+    }
+    .role-overrides[open] { background: rgba(255, 255, 255, 0.025); }
+    .role-overrides summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 510;
+      color: var(--text-2);
+      letter-spacing: -0.13px;
+    }
+    .role-overrides summary:hover { color: var(--text); }
+    .role-overrides-hint {
+      color: var(--text-4);
+      font-weight: 400;
+    }
+    .role-overrides-desc {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--text-3);
+      line-height: 1.5;
+    }
+
+    /* Role model pills in the providers table */
+    .role-pills {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .role-pill {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 4px;
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-solid);
+      color: var(--text-2);
+      background: transparent;
+    }
+    .role-pill .role {
+      text-transform: uppercase;
+      font-weight: 510;
+      color: var(--text-3);
+      letter-spacing: 0.04em;
+      font-size: 10px;
+    }
+    .role-pill .mono { font-size: 11px; }
+
+    /* API key remember + probe status */
+    .api-key-remember {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-3);
+      cursor: pointer;
+      user-select: none;
+    }
+    .api-key-remember input[type=checkbox] {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .probe-status {
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-3);
+      min-height: 1em;
+    }
+    .probe-status.ok { color: var(--success); }
+    .probe-status.error { color: var(--danger); }
+    /* Enhancement: input type=url / type=password uses the same styles as text */
+    .field input[type=url],
+    .field input[type=password] {
+      width: 100%;
+      background-color: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      padding: 9px 12px;
+      color: var(--text);
+      font-family: inherit;
+      font-feature-settings: "cv01", "ss03";
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: -0.13px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+    }
+    .field input[type=url]:hover,
+    .field input[type=password]:hover { border-color: rgba(255, 255, 255, 0.14); }
+    .field input[type=url]:focus,
+    .field input[type=password]:focus {
+      border-color: var(--accent-2);
+      background-color: rgba(255, 255, 255, 0.03);
+      box-shadow: 0 0 0 3px rgba(113, 112, 255, 0.18);
+    }
+    .field input[type=url]::placeholder,
+    .field input[type=password]::placeholder { color: var(--text-4); }
+
     /* Actions */
     .actions {
       display: flex;
@@ -642,24 +748,27 @@
       font-weight: 400;
     }
 
-    /* Buttons */
+    /* Buttons — height matched to inputs (padding 9px 12px + font-size 14 + line-height 1.5) */
     .btn {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
       background: var(--accent);
       color: #fff;
       border: 1px solid var(--accent);
       border-radius: var(--r-md);
-      padding: 7px 14px;
+      padding: 9px 16px;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 14px;
+      line-height: 1.5;
       font-weight: 510;
       letter-spacing: -0.13px;
       cursor: pointer;
       text-decoration: none;
       transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
     .btn:hover {
       background: var(--accent-hover);
       border-color: var(--accent-hover);
@@ -687,6 +796,7 @@
     .btn.small {
       padding: 4px 10px;
       font-size: 12px;
+      line-height: 1.4;
     }
 
     /* ─────────── State chips ─────────── */
@@ -1011,10 +1121,11 @@
   <div class="shell">
     <header class="masthead">
       <a class="wordmark" href="/">
-        <span class="mark">pipeline-ia</span>
+        <span class="mark">atelier</span>
         <span class="tag">multi-agent code modification</span>
       </a>
       <nav class="masthead-nav">
+        <a href="/providers-ui">Providers</a>
         <a href="http://localhost:4200" target="_blank" rel="noopener">Prefect ↗</a>
       </nav>
     </header>
@@ -1066,7 +1177,7 @@
           if (matches.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'combobox-empty';
-            empty.textContent = this.options.length === 0 ? 'Sin opciones disponibles' : 'Sin coincidencias';
+            empty.textContent = this.options.length === 0 ? 'No options available' : 'No matches';
             this.listbox.appendChild(empty);
             return;
           }
@@ -1205,7 +1316,7 @@
         input.value = path;
         input.dispatchEvent(new Event('change', { bubbles: true }));
         if (display) {
-          display.textContent = path || 'ninguno';
+          display.textContent = path || 'none';
           display.classList.toggle('empty', !path);
         }
       });

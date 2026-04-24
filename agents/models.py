@@ -1,4 +1,4 @@
-"""Contrato de datos entre orquestador y agentes."""
+"""Data contract between orchestrator and agents."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -34,8 +34,15 @@ class TaskInput(BaseModel):
     base_branch: str = "main"
     feature_branch: str
     previous_feedback: str | None = None
-    model: str = "gemma4:26b"
-    ollama_host: str = "http://172.21.192.1:11434"
+
+    # --- LLM config (no secrets) ---
+    # provider_label is cosmetic: "nvidia", "openai", "ollama-local"...
+    # base_url points to the OpenAI-compatible endpoint (with /v1 at the end).
+    # The API key NEVER goes here — the worker injects it into the agent
+    # container as OPENAI_API_KEY, it is never written to .task-input.json.
+    provider_label: str
+    base_url: str
+    model: str
 
 
 class LogEntry(BaseModel):

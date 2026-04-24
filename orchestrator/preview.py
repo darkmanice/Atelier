@@ -1,14 +1,13 @@
 """
-Estado persistente de previews activas.
+Persistent state of active previews.
 
-Cada preview viva tiene un sidecar JSON en logs/task-<id>.preview.json con
-todo lo necesario para poder tirarla desde el worker sin tener que volver a
-parsear el .pipeline-ia.yml: puerto asignado, comando de down, cwd en el host,
-env vars.
+Each live preview has a JSON sidecar at logs/task-<id>.preview.json with
+everything needed to tear it down from the worker without having to re-parse
+the .atelier.yml: assigned port, down command, host cwd, env vars.
 
-Asignación de puertos: dinámica desde un rango base. Miramos qué puertos
-están ocupados por otros sidecars y cogemos el primero libre. Así pueden
-coexistir N previews a la vez (N = size del rango).
+Port allocation: dynamic from a base range. We look at which ports are
+occupied by other sidecars and pick the first free one. This way N previews
+can coexist at once (N = size of the range).
 """
 from __future__ import annotations
 
@@ -18,8 +17,8 @@ from pathlib import Path
 
 from orchestrator.config import LOGS_DIR
 
-PREVIEW_BASE_PORT = int(os.environ.get("PIPELINE_PREVIEW_BASE_PORT", "5100"))
-PREVIEW_PORT_RANGE = int(os.environ.get("PIPELINE_PREVIEW_PORT_RANGE", "100"))
+PREVIEW_BASE_PORT = int(os.environ.get("PREVIEW_BASE_PORT", "5100"))
+PREVIEW_PORT_RANGE = int(os.environ.get("PREVIEW_PORT_RANGE", "100"))
 
 
 def sidecar_path(task_id: int) -> Path:

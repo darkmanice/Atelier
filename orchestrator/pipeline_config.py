@@ -1,8 +1,8 @@
 """
-Esquema del fichero .pipeline-ia.yml que vive en la raíz del repo del usuario.
+Schema for the .atelier.yml file that lives at the root of the user's repo.
 
-Cargado por el runner antes de cada fase. Todas las secciones son opcionales:
-si una no está, esa fase se salta con warning.
+Loaded by the runner before each phase. All sections are optional: if one is
+missing, that phase is skipped with a warning.
 """
 from __future__ import annotations
 
@@ -25,41 +25,41 @@ class TestCommand(BaseModel):
 class E2EConfig(BaseModel):
     setup: str | None = Field(
         default=None,
-        description="Comando para levantar servicios. Ejemplo: 'docker compose up -d'",
+        description="Command to bring up services. Example: 'docker compose up -d'",
     )
     command: str
     teardown: str | None = Field(
         default=None,
-        description="Comando para tirar servicios. Se ejecuta SIEMPRE, incluso si los tests fallan.",
+        description="Command to tear down services. Runs ALWAYS, even if tests fail.",
     )
     timeout: int = 900
 
 
 class PreviewConfig(BaseModel):
     """
-    Preview de la tarea: un docker compose (o lo que sea) que se levanta con
-    los cambios aplicados para que el usuario pueda trastearlo antes de mergear.
+    Task preview: a docker compose (or whatever) that is brought up with the
+    applied changes so the user can play with it before merging.
 
-    El pipeline pasa PIPELINE_TASK_ID y PIPELINE_PREVIEW_PORT como variables
-    de entorno al ejecutar `up` y `down`. El puerto se asigna dinámicamente del
-    rango configurable (PIPELINE_PREVIEW_BASE_PORT..+range) para permitir
-    varias previews simultáneas sin colisión.
+    The pipeline passes TASK_ID and PREVIEW_PORT as environment variables
+    when running `up` and `down`. The port is assigned dynamically from the
+    configurable range (PREVIEW_BASE_PORT..+range) to allow several
+    simultaneous previews without collision.
 
-    El campo `url` puede referenciar ${PIPELINE_PREVIEW_PORT} (sustitución
-    string.Template) y se devuelve en /tasks/{id}/preview.
+    The `url` field can reference ${PREVIEW_PORT} (string.Template
+    substitution) and is returned in /tasks/{id}/preview.
     """
 
-    up: str = Field(description="Comando para levantar la preview.")
-    down: str = Field(description="Comando para tirar la preview.")
+    up: str = Field(description="Command to bring up the preview.")
+    down: str = Field(description="Command to tear down the preview.")
     url: str = Field(
-        default="http://localhost:${PIPELINE_PREVIEW_PORT}",
-        description="URL de la preview. Soporta ${PIPELINE_PREVIEW_PORT}.",
+        default="http://localhost:${PREVIEW_PORT}",
+        description="Preview URL. Supports ${PREVIEW_PORT}.",
     )
     timeout: int = 180
 
 
 class PipelineConfig(BaseModel):
-    """Config completo del fichero .pipeline-ia.yml."""
+    """Full config of the .atelier.yml file."""
 
     install: InstallConfig | None = None
     quick_tests: TestCommand | None = None
@@ -68,19 +68,19 @@ class PipelineConfig(BaseModel):
     preview: PreviewConfig | None = None
 
 
-CONFIG_FILENAME = ".pipeline-ia.yml"
+CONFIG_FILENAME = ".atelier.yml"
 
 
 def load_config(worktree_path: Path) -> PipelineConfig | None:
     """
-    Carga el config del worktree.
+    Loads the worktree's config.
 
     Returns:
-        PipelineConfig si existe y es válido.
-        None si el fichero no existe (caller debe emitir warning).
+        PipelineConfig if it exists and is valid.
+        None if the file does not exist (caller must emit a warning).
 
     Raises:
-        ValueError si el fichero existe pero es inválido.
+        ValueError if the file exists but is invalid.
     """
     config_file = worktree_path / CONFIG_FILENAME
     if not config_file.exists():

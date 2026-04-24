@@ -1,0 +1,47 @@
+{% if not crypto_available %}
+  <div class="empty-state">
+    Saved providers not available.<br>
+    <span class="sub">Set <code>MASTER_ENCRYPTION_KEY</code> in your <code>.env</code> and restart the orchestrator.</span>
+  </div>
+{% elif not providers %}
+  <div class="empty-state">
+    No saved providers.<br>
+    <span class="sub">Use the form above to add one.</span>
+  </div>
+{% else %}
+  <table class="ledger">
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Provider</th>
+        <th>Base URL</th>
+        <th>Models</th>
+        <th style="width: 5rem; text-align:right;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in providers %}
+      <tr>
+        <td><strong>{{ p.label }}</strong></td>
+        <td><code>{{ p.provider_label }}</code></td>
+        <td class="mono" style="max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.base_url }}</td>
+        <td>
+          <div class="role-pills">
+            <span class="role-pill"><span class="role">default</span><span class="mono">{{ p.model }}</span></span>
+            {% if p.model_implementer %}<span class="role-pill"><span class="role">impl</span><span class="mono">{{ p.model_implementer }}</span></span>{% endif %}
+            {% if p.model_reviewer %}<span class="role-pill"><span class="role">rev</span><span class="mono">{{ p.model_reviewer }}</span></span>{% endif %}
+            {% if p.model_simplifier %}<span class="role-pill"><span class="role">simp</span><span class="mono">{{ p.model_simplifier }}</span></span>{% endif %}
+          </div>
+        </td>
+        <td style="text-align:right; white-space: nowrap;">
+          <a href="/providers-ui/{{ p.id }}/edit" class="btn small ghost" style="margin-right: 4px;">Edit</a>
+          <form method="post" action="/ui/providers/{{ p.id }}/delete" style="margin:0; display:inline;"
+                onsubmit="return confirm('Delete provider &quot;{{ p.label }}&quot;? The encrypted API key will be lost.');">
+            <button type="submit" class="btn small danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

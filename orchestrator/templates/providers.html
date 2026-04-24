@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}LLM providers · atelier{% endblock %}
+{% block content %}
+
+<a class="back-link" href="/">← New task</a>
+
+{% set editing = edit_target is not none %}
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">{% if editing %}Edit provider{% else %}Add provider{% endif %}</h2>
+    <span class="section-meta">
+      {% if crypto_available %}AES-GCM encrypted on disk{% else %}master key not configured{% endif %}
+    </span>
+  </div>
+
+  {% if not crypto_available %}
+    <div class="empty-state">
+      Set <code>MASTER_ENCRYPTION_KEY</code> in your <code>.env</code> and restart the orchestrator to enable this feature.
+    </div>
+  {% else %}
+  <form method="post"
+        action="{% if editing %}/ui/providers/{{ edit_target.id }}/edit{% else %}/ui/providers{% endif %}"
+        class="panel">
+    <div class="field-grid field-grid-2">
+      <div class="field">
+        <label class="field-label" for="label">
+          Name
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+                data-tooltip="Label to identify it in the 'New task' selector (e.g. 'NVIDIA work').">ⓘ</span>
+        </label>
+        <input type="text" id="label" name="label" required
+               autocomplete="off" spellcheck="false"
+               value="{{ edit_target.label if editing else '' }}">
+      </div>
+      <div class="field">
+        <label class="field-label" for="provider_label">
+          Preset
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+                data-tooltip="Auto-fills the base URL. If you pick 'Custom', enter it yourself.">ⓘ</span>
+        </label>
+        <select id="provider_label" name="provider_label" class="field-input">
+          {% set current_preset = edit_target.provider_label if editing else 'nvidia' %}
+          <option value="nvidia"     {% if current_preset == 'nvidia' %}selected{% endif %}>NVIDIA NIM (build.nvidia.com)</option>
+          <option value="openai"     {% if current_preset == 'openai' %}selected{% endif %}>OpenAI</option>
+          <option value="openrouter" {% if current_preset == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+          <option value="ollama"     {% if current_preset == 'ollama' %}selected{% endif %}>Ollama local</option>
+          <option value="custom"     {% if current_preset == 'custom' %}selected{% endif %}>Custom</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field-grid field-grid-2">
+      <div class="field">
+        <label class="field-label" for="base_url">Base URL</label>
+        <input type="url" id="base_url" name="base_url" required
+               placeholder="https://integrate.api.nvidia.com/v1"
+               autocomplete="off" spellcheck="false"
+               value="{{ edit_target.base_url if editing else '' }}">
+      </div>
+      <div class="field">
+        <label class="field-label" for="api_key">
+          API key
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+                data-tooltip="{% if editing %}Leave empty to keep the existing key.{% else %}Encrypted with AES-GCM using MASTER_ENCRYPTION_KEY before being written to disk.{% endif %}">ⓘ</span>
+        </label>
+        <input type="password" id="api_key" name="api_key"
+               {% if not editing %}required{% endif %}
+               placeholder="{% if editing %}(leave empty to keep the current one){% else %}nvapi-… · sk-… · or empty if no auth is required{% endif %}"
+               autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="field-grid field-grid-2">
+      <div class="field">
+        <label class="field-label" for="model-input">
+          Default model
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+                data-tooltip="The model used for all 3 roles unless you define overrides below.">ⓘ</span>
+        </label>
+        <div class="combobox" data-for="model">
+          <input type="text" class="combobox-input field-input" id="model-input"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Type or use 'Probe & load'"
+                 value="{{ edit_target.model if editing else '' }}">
+          <div class="combobox-listbox" role="listbox" hidden></div>
+        </div>
+        <select id="model" name="model" required class="combobox-source"
+                tabindex="-1" aria-hidden="true">
+          {% if editing and edit_target.model %}
+            <option value="{{ edit_target.model }}" selected>{{ edit_target.model }}</option>
+          {% endif %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label">&nbsp;</label>
+        <button type="button" id="probe-models-btn" class="btn ghost">
+          Probe &amp; load models
+        </button>
+        <span class="probe-status" id="probe-models-status"></span>
+      </div>
+    </div>
+
+    <details class="role-overrides" {% if editing and (edit_target.model_implementer or edit_target.model_reviewer or edit_target.model_simplifier) %}open{% endif %}>
+      <summary>
+        Models per role <span class="role-overrides-hint">(optional)</span>
+      </summary>
+      <p class="role-overrides-desc">
+        If you set a model for a specific role, it's used only by that agent.
+        Empty = the default model above is used.
+      </p>
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="model_implementer">Implementer</label>
+          <input type="text" id="model_implementer" name="model_implementer"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="(use default)"
+                 value="{{ edit_target.model_implementer if editing else '' }}">
+        </div>
+        <div class="field">
+          <label class="field-label" for="model_reviewer">Reviewer</label>
+          <input type="text" id="model_reviewer" name="model_reviewer"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="(use default)"
+                 value="{{ edit_target.model_reviewer if editing else '' }}">
+        </div>
+        <div class="field">
+          <label class="field-label" for="model_simplifier">Simplifier</label>
+          <input type="text" id="model_simplifier" name="model_simplifier"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="(use default)"
+                 value="{{ edit_target.model_simplifier if editing else '' }}">
+        </div>
+      </div>
+    </details>
+
+    <div class="actions">
+      <span class="legend">
+        {% if editing %}
+          Changes apply immediately. The API key is kept as-is if you leave it empty.
+        {% else %}
+          The API key is encrypted before being persisted.
+        {% endif %}
+      </span>
+      <span>
+        {% if editing %}<a href="/providers-ui" class="btn ghost" style="margin-right: 8px;">Cancel</a>{% endif %}
+        <button type="submit" class="btn">{% if editing %}Save changes{% else %}Save provider{% endif %}</button>
+      </span>
+    </div>
+  </form>
+  {% endif %}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Saved providers</h2>
+    <span class="section-meta">{{ providers|length }} {% if providers|length == 1 %}provider{% else %}providers{% endif %}</span>
+  </div>
+
+  <div class="panel" style="padding: 4px 16px;">
+    {% include "_providers_list.html" %}
+  </div>
+</section>
+
+<script>
+  (function () {
+    const PROVIDER_PRESETS = {
+      nvidia:     'https://integrate.api.nvidia.com/v1',
+      openai:     'https://api.openai.com/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      ollama:     'http://localhost:11434/v1',
+      custom:     '',
+    };
+
+    const presetEl    = document.getElementById('provider_label');
+    const baseUrlEl   = document.getElementById('base_url');
+    const apiKeyEl    = document.getElementById('api_key');
+    const modelInput  = document.getElementById('model-input');
+    const modelSelect = document.getElementById('model');
+    const probeBtn    = document.getElementById('probe-models-btn');
+    const probeStatus = document.getElementById('probe-models-status');
+
+    if (!presetEl) return;   // page with no form (master key not configured)
+
+    // Auto-fill base_url when the preset changes AS LONG AS you haven't typed
+    // something different from the previous preset. On edit we start with the
+    // base_url already loaded → don't overwrite it on render.
+    let lastPreset = presetEl.value;
+    presetEl.addEventListener('change', () => {
+      const previous = PROVIDER_PRESETS[lastPreset] || '';
+      if (!baseUrlEl.value || baseUrlEl.value === previous) {
+        baseUrlEl.value = PROVIDER_PRESETS[presetEl.value] || '';
+      }
+      lastPreset = presetEl.value;
+    });
+
+    probeBtn.addEventListener('click', async () => {
+      if (!baseUrlEl.value) {
+        probeStatus.textContent = 'Base URL missing';
+        probeStatus.className = 'probe-status error';
+        return;
+      }
+      probeBtn.disabled = true;
+      probeStatus.textContent = 'Loading…';
+      probeStatus.className = 'probe-status';
+      try {
+        const resp = await fetch('/ui/models-probe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: baseUrlEl.value,
+            api_key: apiKeyEl.value || null,
+          }),
+        });
+        const html = await resp.text();
+        modelSelect.innerHTML = html;
+        modelSelect.dispatchEvent(new Event('htmx:afterSwap'));
+        const count = modelSelect.querySelectorAll('option:not([disabled])').length;
+        probeStatus.textContent = count > 0 ? `${count} models` : 'No models';
+        probeStatus.className = count > 0 ? 'probe-status ok' : 'probe-status error';
+      } catch (err) {
+        probeStatus.textContent = 'Network error';
+        probeStatus.className = 'probe-status error';
+      } finally {
+        probeBtn.disabled = false;
+      }
+    });
+  })();
+</script>
+
+{% endblock %}

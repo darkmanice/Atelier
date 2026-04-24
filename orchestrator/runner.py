@@ -1,12 +1,13 @@
 """
-Ejecuta comandos de test dentro de contenedores efímeros sobre el worktree.
+Runs test commands inside ephemeral containers over the worktree.
 
-Dos imágenes de runner:
-  - pipeline-runner-quick:   Python + pytest + linters. Para quick/full tests.
-  - pipeline-runner-e2e:     basado en mcr.microsoft.com/playwright. Para E2E.
+Two runner images:
+  - atelier-runner-quick:   Python + pytest + linters. For quick/full tests.
+  - atelier-runner-e2e:     based on mcr.microsoft.com/playwright. For E2E.
 
-El runner es determinista: no usa LLM. Solo lanza un comando y captura su
-exit code + output. Si exit==0 → success. Si no → failure con el output.
+The runner is deterministic: does not use an LLM. It just runs a command and
+captures its exit code + output. If exit==0 -> success. Otherwise -> failure
+with the output.
 """
 from __future__ import annotations
 
@@ -31,18 +32,18 @@ log = logging.getLogger(__name__)
 
 _client = docker.from_env()
 
-# Imágenes de runners (construidas por el compose al arrancar)
+# Runner images (built by compose at startup)
 RUNNER_QUICK_IMAGE = os.environ.get(
-    "PIPELINE_RUNNER_QUICK_IMAGE", "pipeline-runner-quick:latest"
+    "RUNNER_QUICK_IMAGE", "atelier-runner-quick:latest"
 )
 RUNNER_E2E_IMAGE = os.environ.get(
-    "PIPELINE_RUNNER_E2E_IMAGE", "pipeline-runner-e2e:latest"
+    "RUNNER_E2E_IMAGE", "atelier-runner-e2e:latest"
 )
 
 
 @dataclass
 class RunnerResult:
-    """Resultado de ejecutar un comando en un runner."""
+    """Result of running a command in a runner."""
 
     success: bool
     exit_code: int
@@ -54,11 +55,11 @@ class RunnerResult:
     skip_reason: str | None = None
 
     def summary_for_feedback(self) -> str:
-        """Formato conciso para pasar al implementer como feedback."""
+        """Concise format to pass to the implementer as feedback."""
         if self.skipped:
             return f"(skipped: {self.skip_reason})"
         head = f"Command: {self.command}\nExit code: {self.exit_code}\n"
-        # Priorizamos stderr sobre stdout para feedback (los fallos suelen ir ahí)
+        # We prioritize stderr over stdout for feedback (failures usually go there)
         body = (self.stderr or self.stdout)[-4000:]
         return head + "\nOutput:\n" + body
 
@@ -81,18 +82,18 @@ def run_command_in_runner(
     mount_docker_socket: bool = False,
 ) -> RunnerResult:
     """
-    Ejecuta un comando shell dentro de un contenedor efímero del runner dado.
+    Runs a shell command inside an ephemeral container of the given runner.
 
     Args:
-        image: Imagen del runner.
-        command: Comando shell completo (se pasa a `sh -c`).
-        host_worktree_path: Ruta del worktree EN EL HOST (para bind mount).
-        timeout_sec: Timeout duro.
-        extra_env: Variables de entorno adicionales.
-        mount_docker_socket: Si True, monta /var/run/docker.sock
-                             (NO usar para tests normales; sí para setup/teardown
-                             de servicios E2E si llegara a hacer falta — actualmente
-                             los services los levanta Prefect desde fuera).
+        image: Runner image.
+        command: Full shell command (passed to `sh -c`).
+        host_worktree_path: Path of the worktree ON THE HOST (for bind mount).
+        timeout_sec: Hard timeout.
+        extra_env: Additional environment variables.
+        mount_docker_socket: If True, mounts /var/run/docker.sock
+                             (DO NOT use for normal tests; use for setup/teardown
+                             of E2E services if it were ever needed — currently
+                             services are brought up by Prefect from outside).
     """
     _ensure_image(image)
 
@@ -112,7 +113,7 @@ def run_command_in_runner(
             "bind": "/var/run/docker.sock", "mode": "rw"
         }
 
-    # Nombre único (puede haber varios runners concurrentes por tarea)
+    # Unique name (there can be several concurrent runners per task)
     unique = uuid.uuid4().hex[:8]
     container = _client.containers.create(
         image=image,
@@ -125,7 +126,7 @@ def run_command_in_runner(
         nano_cpus=int(AGENT_CPU_LIMIT * 1_000_000_000),
         network=AGENT_NETWORK,
         auto_remove=False,
-        name=f"pipeline-runner-{unique}",
+        name=f"atelier-runner-{unique}",
     )
 
     start_time = time.time()
@@ -173,7 +174,7 @@ def run_command_in_runner(
 
 
 def skipped(reason: str, command: str = "") -> RunnerResult:
-    """Helper para crear un RunnerResult que representa un skip."""
+    """Helper to create a RunnerResult that represents a skip."""
     return RunnerResult(
         success=True,
         exit_code=0,

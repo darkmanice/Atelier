@@ -1,9 +1,9 @@
-# Deployment declarativo de Prefect. El worker lo aplica al arrancar con
+# Declarative Prefect deployment. The worker applies it at start-up with
 # `prefect deploy --all`.
 #
-# Define un único deployment llamado "default" en el flow "pipeline".
-# La invocación desde el orchestrator se hace con:
-#   run_deployment("pipeline/default", parameters={...})
+# Defines a single deployment called "default" on the "atelier" flow.
+# Invocation from the orchestrator:
+#   run_deployment("atelier/default", parameters={...})
 
 prefect-version: "3"
 
@@ -11,13 +11,13 @@ deployments:
   - name: default
     entrypoint: flows/pipeline.py:pipeline_flow
     work_pool:
-      name: pipeline-pool
-    # Concurrencia: máximo N flow runs en paralelo en este pool.
-    # Respeta PIPELINE_MAX_CONCURRENT de tu .env.
+      name: atelier-pool
+    # Concurrency: at most N flow runs in parallel on this pool.
+    # Honors MAX_CONCURRENT_TASKS from your .env.
     concurrency_limit: 2
     description: "Pipeline Implementer → Reviewer → Simplifier"
   - name: default
     entrypoint: flows/pipeline.py:teardown_preview_flow
     work_pool:
-      name: pipeline-pool
-    description: "Teardown de preview lanzada por una tarea previa"
+      name: atelier-pool
+    description: "Teardown of a preview started by a previous task"

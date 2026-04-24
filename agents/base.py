@@ -1,16 +1,16 @@
 """
-BaseAgent: loop ReAct genérico para los agentes que NO delegan en Aider.
+BaseAgent: generic ReAct loop for agents that do NOT delegate to Aider.
 
-El implementer no usa esta clase (usa Aider como subprocess).
-El reviewer y el simplifier sí.
+The implementer does not use this class (it uses Aider as a subprocess).
+The reviewer and simplifier do.
 
-Flujo:
-  1. Mensaje de sistema con el rol + tools disponibles.
-  2. Mensaje de usuario con la tarea.
-  3. El modelo responde: o tool_calls, o un `finish`.
-  4. Si hay tool_calls, los ejecuta y vuelve a llamar al modelo.
-  5. Si llama a `finish`, terminamos.
-  6. Límite de iteraciones para evitar loops infinitos.
+Flow:
+  1. System message with the role + available tools.
+  2. User message with the task.
+  3. The model responds: either tool_calls, or a `finish`.
+  4. If there are tool_calls, execute them and call the model again.
+  5. If it calls `finish`, we terminate.
+  6. Iteration limit to avoid infinite loops.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agents.llm import OllamaClient
+from agents.llm import LLMClient
 from agents.models import AgentResult, AgentRole, LogEntry, TaskInput
 from agents.tools.code_tools import TOOL_DEFINITIONS, dispatch
 
@@ -30,12 +30,13 @@ class BaseAgent:
         self.task = task
         self.system_prompt = system_prompt
         self.worktree = Path(task.worktree_path)
-        self.llm = OllamaClient(host=task.ollama_host, model=task.model)
+        # base_url and api_key come from the environment (injected by the worker).
+        self.llm = LLMClient(model=task.model)
         self.log: list[LogEntry] = []
         self.commits: list[str] = []
 
     def build_user_prompt(self) -> str:
-        """Override para construir el prompt inicial según el rol."""
+        """Override to build the initial prompt according to the role."""
         raise NotImplementedError
 
     def run(self) -> AgentResult:
@@ -56,8 +57,8 @@ class BaseAgent:
                     metadata={"iteration": iteration},
                 ))
 
-            # Si no hay tool calls, el modelo ha "contestado" sin decidir.
-            # Forzamos que termine con finish o insistimos.
+            # If there are no tool calls, the model has "answered" without deciding.
+            # Force it to end with finish or insist.
             if not response.tool_calls:
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({
@@ -66,7 +67,7 @@ class BaseAgent:
                 })
                 continue
 
-            # Procesar cada tool call
+            # Process each tool call
             messages.append({
                 "role": "assistant",
                 "content": response.content,
@@ -86,14 +87,14 @@ class BaseAgent:
                     content=f"{name}({json.dumps(args, ensure_ascii=False)[:500]})",
                 ))
 
-                # `finish` es terminal
+                # `finish` is terminal
                 if name == "finish":
                     return self._build_result(args)
 
-                # Resto de tools
+                # Remaining tools
                 result = dispatch(name, args, self.worktree)
 
-                # Capturar hashes de commit si los hay
+                # Capture commit hashes if any
                 if name == "git_commit" and result.startswith("committed "):
                     sha = result.split()[1].rstrip(":")
                     self.commits.append(sha)
@@ -110,7 +111,7 @@ class BaseAgent:
                     "name": name,
                 })
 
-        # Se acabaron las iteraciones sin `finish`
+        # Iterations exhausted without `finish`
         return AgentResult(
             success=False,
             verdict="failed",

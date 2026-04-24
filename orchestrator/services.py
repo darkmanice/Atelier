@@ -1,12 +1,12 @@
 """
-Setup/teardown de servicios para tests E2E. Ejecutado DESDE el worker de Prefect
-(que tiene acceso al socket Docker), no desde dentro del runner.
+Service setup/teardown for E2E tests. Run FROM the Prefect worker (which has
+access to the Docker socket), not from inside the runner.
 
-Por qué: los comandos setup/teardown típicamente son `docker compose up/down`
-que necesitan Docker del host. El worker lo tiene via /var/run/docker.sock.
+Why: setup/teardown commands are typically `docker compose up/down` that
+need the host's Docker. The worker has it via /var/run/docker.sock.
 
-Los comandos se ejecutan con `cwd` igual al worktree del host, para que
-`docker compose up` encuentre su docker-compose.yml.
+Commands are run with `cwd` equal to the host worktree, so that
+`docker compose up` finds its docker-compose.yml.
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ def run_service_command(
     env: dict[str, str] | None = None,
 ) -> ServiceResult:
     """
-    Ejecuta un comando shell con cwd en el worktree del host (desde el worker).
-    Si `env` se pasa, se mergea sobre os.environ (los valores pasados ganan).
+    Runs a shell command with cwd in the host worktree (from the worker).
+    If `env` is passed, it is merged over os.environ (the passed values win).
     """
     log.info("Running service command: %s (cwd=%s)", command, host_worktree_path)
     full_env = os.environ.copy()

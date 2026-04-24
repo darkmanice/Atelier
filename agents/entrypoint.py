@@ -1,6 +1,6 @@
 """
-Entrypoint del contenedor. Lee TaskInput de /workspace/.task-input.json,
-decide qué rol correr, emite AgentResult por stdout.
+Container entrypoint. Reads TaskInput from /workspace/.task-input.json,
+decides which role to run, emits AgentResult via stdout.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ INPUT_FILE = Path(os.environ.get("TASK_INPUT_FILE", "/workspace/.task-input.json
 
 
 def main() -> int:
-    # 1. Leer TaskInput del fichero
+    # 1. Read TaskInput from the file
     try:
         if not INPUT_FILE.exists():
             raise FileNotFoundError(f"{INPUT_FILE} not found")
@@ -33,13 +33,13 @@ def main() -> int:
         print(err.model_dump_json())
         return 2
 
-    # 2. Borrar el fichero de input para no contaminar commits posteriores
+    # 2. Delete the input file so it does not contaminate later commits
     try:
         INPUT_FILE.unlink()
     except Exception:
         pass
 
-    # 3. Despachar al agente correcto
+    # 3. Dispatch to the correct agent
     try:
         if task.role == AgentRole.IMPLEMENTER:
             from agents.implementer import run as run_impl

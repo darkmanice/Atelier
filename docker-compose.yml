@@ -1,14 +1,14 @@
-# pipeline-ia con Prefect 3 como orquestador.
+# atelier — multi-agent code pipeline orchestrated with Prefect 3.
 #
-# Servicios:
-#   - prefect-server: UI + API de Prefect en :4200
-#   - prefect-worker: ejecuta los flows (tu código de orquestación)
-#   - orchestrator:   FastAPI en :8000, dispara deployments de Prefect
-#   - agent-builder:  construye la imagen del agente (one-shot)
-#   - runner-quick-builder: construye la imagen de runner quick/full (one-shot)
-#   - runner-e2e-builder:   construye la imagen de runner E2E (one-shot)
+# Services:
+#   - prefect-server: Prefect UI + API on :4200
+#   - prefect-worker: runs the flows (your orchestration code)
+#   - orchestrator:   FastAPI on :8000, dispatches Prefect deployments
+#   - agent-builder:  builds the agent image (one-shot)
+#   - runner-quick-builder: builds the quick/full runner image (one-shot)
+#   - runner-e2e-builder:   builds the E2E runner image (one-shot)
 
-name: pipeline-ia-prefect
+name: atelier
 
 services:
   # -----------------------
@@ -16,7 +16,7 @@ services:
   # -----------------------
   prefect-server:
     image: prefecthq/prefect:3-latest
-    container_name: pipeline-prefect-server
+    container_name: atelier-prefect-server
     restart: unless-stopped
     command: prefect server start --host 0.0.0.0 --port 4200
     environment:
@@ -38,14 +38,14 @@ services:
       - pipeline
 
   # -----------------------
-  # Prefect Worker (ejecuta los flows)
+  # Prefect Worker (runs the flows)
   # -----------------------
   prefect-worker:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
-    image: pipeline-worker:latest
-    container_name: pipeline-prefect-worker
+    image: atelier-worker:latest
+    container_name: atelier-prefect-worker
     restart: unless-stopped
     depends_on:
       prefect-server:
@@ -59,48 +59,52 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./worktrees:/app/worktrees
-      # Bind mount extra: el worker necesita que el HOST path de los worktrees
-      # sea válido dentro del container para que `subprocess.run(cwd=host_path)`
-      # en services.py funcione (lo usan e2e_setup/teardown y el preview_up).
-      - ${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}:${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}
+      # Extra bind mount: the worker needs the HOST worktrees path to also
+      # be valid INSIDE the container so that `subprocess.run(cwd=host_path)`
+      # in services.py works (used by e2e_setup/teardown and preview_up).
+      - ${WORKTREES_HOST_DIR:-${PWD}/worktrees}:${WORKTREES_HOST_DIR:-${PWD}/worktrees}
       - ./logs:/app/logs
-      - ${PIPELINE_REPOS_HOST:-./repos}:/repos
+      - ${REPOS_HOST_DIR:?REPOS_HOST_DIR must be set in .env}:/repos
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - OLLAMA_HOST_FROM_CONTAINER=${OLLAMA_EXTERNAL_URL:-http://172.21.192.1:11434}
-      - PIPELINE_MODEL=${PIPELINE_MODEL:-gemma4:26b}
-      - PIPELINE_MAX_CONCURRENT=${PIPELINE_MAX_CONCURRENT:-2}
-      - PIPELINE_MAX_RETRY_ATTEMPTS=${PIPELINE_MAX_RETRY_ATTEMPTS:-2}
-      - PIPELINE_ROOT=/app
-      - PIPELINE_WORKTREES=/app/worktrees
-      - PIPELINE_LOGS=/app/logs
-      - PIPELINE_WORKTREES_HOST=${PIPELINE_WORKTREES_HOST:-${PWD}/worktrees}
-      - PIPELINE_REPOS_HOST=${PIPELINE_REPOS_HOST:-${PWD}/repos}
-      - PIPELINE_AGENT_IMAGE=pipeline-agent:latest
-      - PIPELINE_AGENT_NETWORK=pipeline-ia-prefect_pipeline
-      - PIPELINE_AGENT_MEM=${PIPELINE_AGENT_MEM:-4g}
-      - PIPELINE_AGENT_CPUS=${PIPELINE_AGENT_CPUS:-2.0}
-      - PIPELINE_AGENT_TIMEOUT=${PIPELINE_AGENT_TIMEOUT:-2400}
-      - PIPELINE_RUNNER_QUICK_IMAGE=pipeline-runner-quick:latest
-      - PIPELINE_RUNNER_E2E_IMAGE=pipeline-runner-e2e:latest
+      - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
+      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS:-2}
+      - MAX_RETRY_ATTEMPTS=${MAX_RETRY_ATTEMPTS:-2}
+      - APP_ROOT=/app
+      - WORKTREES_DIR=/app/worktrees
+      - LOGS_DIR=/app/logs
+      - WORKTREES_HOST_DIR=${WORKTREES_HOST_DIR:-${PWD}/worktrees}
+      - REPOS_HOST_DIR=${REPOS_HOST_DIR}
+      - AGENT_IMAGE=atelier-agent:latest
+      - AGENT_NETWORK=atelier_network
+      - AGENT_MEM_LIMIT=${AGENT_MEM_LIMIT:-4g}
+      - AGENT_CPU_LIMIT=${AGENT_CPU_LIMIT:-2.0}
+      - AGENT_TIMEOUT_SEC=${AGENT_TIMEOUT_SEC:-2400}
+      - RUNNER_QUICK_IMAGE=atelier-runner-quick:latest
+      - RUNNER_E2E_IMAGE=atelier-runner-e2e:latest
+      # Shared secret for the internal /internal/consume-secret endpoint.
+      # Must match the one on the orchestrator. Without it, flows cannot
+      # retrieve the api_key from the new endpoints and will fail at start-up.
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set in .env}
+      - ORCHESTRATOR_INTERNAL_URL=http://orchestrator:8000
     command: >
       sh -c "
-      prefect work-pool create pipeline-pool --type process --overwrite || true &&
+      prefect work-pool create atelier-pool --type process --overwrite || true &&
       prefect deploy --all --prefect-file /app/prefect.yaml &&
-      prefect worker start --pool pipeline-pool
+      prefect worker start --pool atelier-pool
       "
     networks:
       - pipeline
 
   # -----------------------
-  # FastAPI (dispara flows de Prefect)
+  # FastAPI (dispatches Prefect flows)
   # -----------------------
   orchestrator:
     build:
       context: .
       dockerfile: docker/orchestrator.Dockerfile
-    image: pipeline-orchestrator:latest
-    container_name: pipeline-orchestrator
+    image: atelier-orchestrator:latest
+    container_name: atelier-orchestrator
     restart: unless-stopped
     depends_on:
       prefect-server:
@@ -109,57 +113,63 @@ services:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
       - ./logs:/app/logs
-      - ${PIPELINE_REPOS_HOST:-./repos}:/repos
+      - ./data:/app/data
+      - ${REPOS_HOST_DIR:?REPOS_HOST_DIR must be set in .env}:/repos
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - PIPELINE_MODEL=${PIPELINE_MODEL:-gemma4:26b}
-      - PIPELINE_DEPLOYMENT_NAME=pipeline/default
-      - PIPELINE_LOGS=/app/logs
+      - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
+      - DEPLOYMENT_NAME=atelier/default
+      - LOGS_DIR=/app/logs
+      - DATA_DIR=/app/data
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set in .env}
+      # Master key used to encrypt stored API keys in /app/data/providers.json.
+      # Empty = "stored providers" feature disabled (one-shot flow still works).
+      - MASTER_ENCRYPTION_KEY=${MASTER_ENCRYPTION_KEY:-}
     networks:
       - pipeline
 
   # -------------------------------------------------------------
-  # Agent-builder: construye la imagen del agente y sale.
+  # Agent-builder: builds the agent image and exits.
   # -------------------------------------------------------------
   agent-builder:
     build:
       context: .
       dockerfile: docker/agent.Dockerfile
-    image: pipeline-agent:latest
-    container_name: pipeline-agent-builder
+    image: atelier-agent:latest
+    container_name: atelier-agent-builder
     entrypoint: ["true"]
     restart: "no"
 
   # -------------------------------------------------------------
-  # Runner-quick-builder: construye la imagen de runner para tests unit/full.
+  # Runner-quick-builder: builds the runner image for unit/full tests.
   # -------------------------------------------------------------
   runner-quick-builder:
     build:
       context: .
       dockerfile: docker/runner-quick.Dockerfile
-    image: pipeline-runner-quick:latest
-    container_name: pipeline-runner-quick-builder
+    image: atelier-runner-quick:latest
+    container_name: atelier-runner-quick-builder
     entrypoint: ["true"]
     restart: "no"
 
   # -------------------------------------------------------------
-  # Runner-e2e-builder: construye la imagen de runner E2E con Playwright.
-  # (~1.5 GB, tarda bastante la primera vez)
+  # Runner-e2e-builder: builds the E2E runner image with Playwright.
+  # (~1.5 GB, takes a while the first time)
   # -------------------------------------------------------------
   runner-e2e-builder:
     build:
       context: .
       dockerfile: docker/runner-e2e.Dockerfile
-    image: pipeline-runner-e2e:latest
-    container_name: pipeline-runner-e2e-builder
+    image: atelier-runner-e2e:latest
+    container_name: atelier-runner-e2e-builder
     entrypoint: ["true"]
     restart: "no"
 
 volumes:
   prefect-data:
-    name: pipeline-ia-prefect_prefect-data
+    name: atelier_prefect-data
 
 networks:
   pipeline:
-    name: pipeline-ia-prefect_pipeline
+    name: atelier_network
     driver: bridge

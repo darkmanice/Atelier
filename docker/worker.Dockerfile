@@ -1,14 +1,14 @@
-# Prefect Worker: ejecuta los flows que definen el pipeline.
+# Prefect Worker: runs the flows that drive the pipeline.
 #
-# Extiende la imagen oficial de Prefect con:
-#   - docker-cli + docker-py (para lanzar contenedores-agente)
-#   - tu código de flows y orchestrator
-#   - git (para crear worktrees)
+# Extends the official Prefect image with:
+#   - docker-cli + docker-py (to launch agent containers)
+#   - the flow and orchestrator source code
+#   - git (to create worktrees)
 FROM prefecthq/prefect:3-latest
 
 USER root
 
-# Instalar docker-cli y git
+# Install docker-cli and git
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -23,22 +23,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Dependencias Python adicionales sobre lo que trae Prefect
+# Extra Python dependencies on top of what Prefect ships
 COPY docker/worker-requirements.txt /tmp/worker-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/worker-requirements.txt
 
-# Código del pipeline
+# Pipeline source code
 COPY flows/ /app/flows/
 COPY orchestrator/ /app/orchestrator/
 COPY agents/models.py /app/agents/models.py
 COPY agents/__init__.py /app/agents/__init__.py
 COPY prefect.yaml /app/prefect.yaml
 
-# Crear directorios runtime y dar permisos al UID 1000 (el que corre)
+# Create runtime directories and hand them to UID 1000 (the runtime user)
 RUN mkdir -p /app/worktrees /app/logs /app/data && chown -R 1000:1000 /app
 
-RUN git config --system user.email "worker@pipeline-ia.local" && \
-    git config --system user.name "pipeline-ia worker" && \
+RUN git config --system user.email "worker@atelier.local" && \
+    git config --system user.name "atelier worker" && \
     git config --system --add safe.directory '*'
 
 ENV PYTHONPATH=/app

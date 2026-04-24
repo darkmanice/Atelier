@@ -1,17 +1,17 @@
 """
-Pipeline de agentes como Prefect flow, con gates de tests.
+Agent pipeline as a Prefect flow, with test gates.
 
-Fases:
-  1. install (si hay config)
+Phases:
+  1. install (if there is a config)
   2. implementer
-  3. quick_tests (gate — si falla, feedback al implementer)
+  3. quick_tests (gate — if it fails, feedback goes to the implementer)
   4. reviewer
   5. simplifier
-  6. full_tests (gate — si falla, feedback al implementer)
-  7. setup_services_e2e + e2e_tests + teardown_services_e2e (gate final)
+  6. full_tests (gate — if it fails, feedback goes to the implementer)
+  7. setup_services_e2e + e2e_tests + teardown_services_e2e (final gate)
 
-Cada gate determinista puede devolver al implementer con feedback.
-Número total de iteraciones limitado por MAX_RETRY_ATTEMPTS.
+Each deterministic gate can loop back to the implementer with feedback.
+Total number of iterations limited by MAX_RETRY_ATTEMPTS.
 """
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ from prefect.tasks import exponential_backoff
 from agents.models import AgentResult, AgentRole, TaskInput
 from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
-from orchestrator.config import DEFAULT_MODEL, OLLAMA_HOST_FROM_CONTAINER
+from orchestrator.config import DEFAULT_MODEL
 from orchestrator.container import run_agent
+from orchestrator.llm_config import fetch_api_key
 from orchestrator.runner import (
     RUNNER_E2E_IMAGE,
     RUNNER_QUICK_IMAGE,
@@ -40,15 +41,15 @@ from orchestrator.pipeline_config import PipelineConfig, load_config
 from orchestrator.worktree import WorktreeHandle, create_worktree, get_diff_summary
 
 
-MAX_RETRY_ATTEMPTS = int(os.environ.get("PIPELINE_MAX_RETRY_ATTEMPTS", "2"))
+MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "2"))
 
-# pytest devuelve este exit code cuando no colecta ningún test. Lo tratamos
-# como "skip" en los gates para que un repo sin tests no haga fallar el pipeline.
+# pytest returns this exit code when it collects no tests. We treat it as
+# "skip" in the gates so a repo without tests does not make the pipeline fail.
 PYTEST_EXIT_NO_TESTS_COLLECTED = 5
 
 
 # ---------------------------
-# Tasks — fases de agente
+# Tasks — agent phases
 # ---------------------------
 
 @task(name="create-worktree", retries=1)
@@ -75,7 +76,10 @@ def _run_agent_task(
     prompt: str,
     base_branch: str,
     feature_branch: str,
+    provider_label: str,
+    base_url: str,
     model: str,
+    api_key: str,
     worktree: dict,
     previous_feedback: Optional[str] = None,
 ) -> dict:
@@ -87,15 +91,20 @@ def _run_agent_task(
         base_branch=base_branch,
         feature_branch=feature_branch,
         previous_feedback=previous_feedback,
+        provider_label=provider_label,
+        base_url=base_url,
         model=model,
-        ollama_host=OLLAMA_HOST_FROM_CONTAINER,
     )
+    # api_key does NOT go into TaskInput. It is passed separately so that
+    # run_agent injects it directly as container env, without touching
+    # .task-input.json.
     result = run_agent(
         task_input,
         Path(worktree["host_path"]),
         Path(worktree["container_path"]),
+        api_key=api_key,
     )
-    tasklog.append_agent_result(task_id, role.value, result)
+    tasklog.append_agent_result(task_id, role.value, result, model=model)
     return result.model_dump()
 
 
@@ -106,27 +115,17 @@ def task_implementer(**kwargs) -> dict:
 
 
 @task(name="reviewer", retries=1)
-def task_reviewer(task_id: int, prompt: str, base_branch: str, feature_branch: str,
-                   model: str, worktree: dict) -> dict:
-    return _run_agent_task(
-        AgentRole.REVIEWER, task_id=task_id, prompt=prompt,
-        base_branch=base_branch, feature_branch=feature_branch,
-        model=model, worktree=worktree,
-    )
+def task_reviewer(**kwargs) -> dict:
+    return _run_agent_task(AgentRole.REVIEWER, **kwargs)
 
 
 @task(name="simplifier", retries=1)
-def task_simplifier(task_id: int, prompt: str, base_branch: str, feature_branch: str,
-                     model: str, worktree: dict) -> dict:
-    return _run_agent_task(
-        AgentRole.SIMPLIFIER, task_id=task_id, prompt=prompt,
-        base_branch=base_branch, feature_branch=feature_branch,
-        model=model, worktree=worktree,
-    )
+def task_simplifier(**kwargs) -> dict:
+    return _run_agent_task(AgentRole.SIMPLIFIER, **kwargs)
 
 
 # ---------------------------
-# Tasks — fases de tests
+# Tasks — test phases
 # ---------------------------
 
 @task(name="load-config")
@@ -136,17 +135,17 @@ def task_load_config(worktree: dict) -> dict | None:
     try:
         config = load_config(container_path)
     except ValueError as e:
-        logger.error(f"Invalid .pipeline-ia.yml: {e}")
+        logger.error(f"Invalid .atelier.yml: {e}")
         return None
 
     if config is None:
         logger.warning(
-            ".pipeline-ia.yml not found in repo root. "
+            ".atelier.yml not found in repo root. "
             "No tests will be executed. Pipeline will continue without test gates."
         )
         return None
 
-    logger.info("Loaded .pipeline-ia.yml")
+    logger.info("Loaded .atelier.yml")
     return config.model_dump()
 
 
@@ -171,12 +170,12 @@ def task_install(worktree: dict, config_dict: dict | None) -> dict:
 
 def _finalize_test_result(result: RunnerResult, phase: str, logger) -> dict:
     """
-    Loguea y aplica la política de skip-si-no-hay-tests.
+    Logs and applies the skip-if-no-tests policy.
 
-    pytest exit 5 = 'no tests collected'. Lo tratamos como skip por decisión
-    explícita: si el usuario aún no ha creado tests para un endpoint, no
-    queremos que el gate falle ni que el implementer se ponga a inventar tests;
-    los escribirá el usuario cuando vea necesario.
+    pytest exit 5 = 'no tests collected'. We treat it as skip by explicit
+    decision: if the user has not yet created tests for an endpoint, we do
+    not want the gate to fail nor the implementer to start inventing tests;
+    the user will write them when they see fit.
     """
     if result.exit_code == PYTEST_EXIT_NO_TESTS_COLLECTED:
         logger.warning(
@@ -228,7 +227,7 @@ def task_full_tests(worktree: dict, config_dict: dict | None) -> dict:
 
 @task(name="e2e-setup")
 def task_e2e_setup(worktree: dict, config_dict: dict | None) -> dict:
-    """Levanta los servicios E2E desde el worker (tiene docker socket)."""
+    """Brings up E2E services from the worker (which has the docker socket)."""
     logger = get_run_logger()
     if not config_dict or not config_dict.get("e2e_tests"):
         return {"success": True, "skipped": True}
@@ -266,9 +265,9 @@ def task_e2e_tests(worktree: dict, config_dict: dict | None) -> dict:
 @task(name="preview-up")
 def task_preview_up(task_id: int, worktree: dict, config_dict: dict | None) -> dict:
     """
-    Levanta la preview tras todos los gates OK. Asigna un puerto libre, ejecuta
-    `preview.up` con cwd=host_worktree y PIPELINE_TASK_ID / PIPELINE_PREVIEW_PORT
-    como env. Persiste un sidecar con lo necesario para el teardown.
+    Brings up the preview after all gates pass. Allocates a free port, runs
+    `preview.up` with cwd=host_worktree and TASK_ID / PREVIEW_PORT as env.
+    Persists a sidecar with what is needed for teardown.
     """
     logger = get_run_logger()
     if not config_dict or not config_dict.get("preview"):
@@ -278,8 +277,8 @@ def task_preview_up(task_id: int, worktree: dict, config_dict: dict | None) -> d
     cfg = config_dict["preview"]
     port = preview_state.allocate_port()
     env = {
-        "PIPELINE_TASK_ID": str(task_id),
-        "PIPELINE_PREVIEW_PORT": str(port),
+        "TASK_ID": str(task_id),
+        "PREVIEW_PORT": str(port),
     }
     logger.info(f"Preview up: {cfg['up']} (port {port})")
 
@@ -311,7 +310,7 @@ def task_preview_up(task_id: int, worktree: dict, config_dict: dict | None) -> d
 
 @task(name="e2e-teardown")
 def task_e2e_teardown(worktree: dict, config_dict: dict | None) -> dict:
-    """Tira servicios E2E. Siempre se ejecuta (incluso si los tests fallaron)."""
+    """Tears down E2E services. Always runs (even if the tests failed)."""
     logger = get_run_logger()
     if not config_dict or not config_dict.get("e2e_tests"):
         return {"success": True, "skipped": True}
@@ -329,23 +328,28 @@ def task_e2e_teardown(worktree: dict, config_dict: dict | None) -> dict:
 
 
 # ---------------------------
-# Flow principal
+# Main flow
 # ---------------------------
 
 def _fmt_test_feedback(phase_name: str, result_dict: dict) -> str:
-    """Formatea el output de un test fallido para mandar al implementer."""
+    """Formats the output of a failed test to send to the implementer."""
     result = RunnerResult(**{k: v for k, v in result_dict.items() if k in RunnerResult.__dataclass_fields__})
     return f"{phase_name} failed.\n{result.summary_for_feedback()}"
 
 
-@flow(name="pipeline", log_prints=True)
+@flow(name="atelier", log_prints=True)
 def pipeline_flow(
     task_id: int,
     prompt: str,
     repo_path: str,
     base_branch: str = "main",
     feature_branch: Optional[str] = None,
-    model: str = DEFAULT_MODEL,
+    provider_label: str = "custom",
+    base_url: str = "",
+    model_implementer: str = DEFAULT_MODEL,
+    model_reviewer: str = DEFAULT_MODEL,
+    model_simplifier: str = DEFAULT_MODEL,
+    secret_token: Optional[str] = None,
 ) -> dict:
     logger = get_run_logger()
 
@@ -353,19 +357,40 @@ def pipeline_flow(
         feature_branch = f"pipeline/task-{task_id}"
 
     tasklog.init_log(task_id, prompt, repo_path, feature_branch)
+    tasklog.append_llm_config(
+        task_id,
+        provider_label=provider_label,
+        base_url=base_url,
+        model_implementer=model_implementer,
+        model_reviewer=model_reviewer,
+        model_simplifier=model_simplifier,
+    )
     tasklog.append_orchestrator(task_id, f"Flow started (task_id={task_id})")
+
+    # Consume the orchestrator api_key once, at flow start.
+    # It lives only in this flow's stack and is passed as an arg to each
+    # run_agent. It never appears in Prefect parameters nor in
+    # .task-input.json.
+    api_key = fetch_api_key(secret_token)
+
+    # Connection args common to the 3 roles. The model travels separately, per role.
+    _conn_kwargs = {
+        "provider_label": provider_label,
+        "base_url": base_url,
+        "api_key": api_key,
+    }
 
     # 1. Worktree
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
 
-    # 2. Cargar config de tests
+    # 2. Load test config
     config_dict = task_load_config(worktree)
 
-    # 3. Instalar deps una vez (si hay config de install)
+    # 3. Install deps once (if there is an install config)
     if config_dict:
         task_install(worktree, config_dict)
 
-    # 4. Bucle implementer → quick → reviewer → simplifier → full → e2e
+    # 4. Loop implementer -> quick -> reviewer -> simplifier -> full -> e2e
     feedback: Optional[str] = None
     total_commits: list[str] = []
 
@@ -376,8 +401,8 @@ def pipeline_flow(
         # Implementer
         impl = task_implementer(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, model=model, worktree=worktree,
-            previous_feedback=feedback,
+            feature_branch=feature_branch, worktree=worktree,
+            previous_feedback=feedback, model=model_implementer, **_conn_kwargs,
         )
         total_commits.extend(impl.get("commits", []))
         if not impl["success"]:
@@ -400,7 +425,8 @@ def pipeline_flow(
         # Reviewer
         rev = task_reviewer(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, model=model, worktree=worktree,
+            feature_branch=feature_branch, worktree=worktree,
+            model=model_reviewer, **_conn_kwargs,
         )
         if not rev["success"] and rev.get("verdict") != "changes_requested":
             raise RuntimeError(f"Reviewer failed: {rev['summary']}")
@@ -418,7 +444,8 @@ def pipeline_flow(
         # Simplifier
         simp = task_simplifier(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, model=model, worktree=worktree,
+            feature_branch=feature_branch, worktree=worktree,
+            model=model_simplifier, **_conn_kwargs,
         )
         total_commits.extend(simp.get("commits", []))
         if not simp["success"]:
@@ -436,11 +463,11 @@ def pipeline_flow(
                 tasklog.append_final(task_id, "failed", msg, "(no diff)")
                 raise RuntimeError(msg)
 
-        # Gate 3: E2E (con setup + teardown siempre)
+        # Gate 3: E2E (with setup + teardown always)
         if config_dict and config_dict.get("e2e_tests"):
             setup_res = task_e2e_setup(worktree, config_dict)
             if not setup_res["success"]:
-                # Aun así intentamos teardown por limpieza
+                # Still attempt teardown for cleanup
                 task_e2e_teardown(worktree, config_dict)
                 raise RuntimeError(f"E2E setup failed: {setup_res.get('stderr','')[-300:]}")
 
@@ -459,14 +486,14 @@ def pipeline_flow(
                     tasklog.append_final(task_id, "failed", msg, "(no diff)")
                     raise RuntimeError(msg)
 
-        # Todo pasó. Salir del bucle.
+        # Everything passed. Exit the loop.
         break
 
     else:
-        # Si el for se agota sin break (no debería llegar aquí por las RuntimeError de arriba)
+        # If the for loop exhausts without break (should not reach here due to the RuntimeErrors above)
         raise RuntimeError("Max retries exhausted")
 
-    # 5. Preview (opcional): levanta el proyecto con los cambios para revisar.
+    # 5. Preview (optional): bring up the project with the changes for review.
     preview_info = task_preview_up(task_id, worktree, config_dict)
 
     # 6. Done
@@ -483,15 +510,15 @@ def pipeline_flow(
 
 
 # ---------------------------
-# Flow de teardown de preview
+# Preview teardown flow
 # ---------------------------
 
 @flow(name="teardown-preview", log_prints=True)
 def teardown_preview_flow(task_id: int) -> dict:
     """
-    Tira la preview de una tarea concreta. Lo dispara el orchestrator en respuesta
-    a DELETE /tasks/{id}/preview. Corre en el worker porque es quien tiene el
-    socket Docker y el worktree montado.
+    Tears down the preview for a specific task. Triggered by the orchestrator
+    in response to DELETE /tasks/{id}/preview. Runs on the worker because it
+    is the one with the Docker socket and the mounted worktree.
     """
     logger = get_run_logger()
     state = preview_state.load_sidecar(task_id)

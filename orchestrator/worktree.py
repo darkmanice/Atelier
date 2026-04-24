@@ -1,4 +1,4 @@
-"""Wrapper sobre git worktree. Dualidad container/host igual que en pipeline-ia."""
+"""Wrapper over git worktree with container/host duality."""
 from __future__ import annotations
 
 import os
@@ -48,7 +48,7 @@ def create_worktree(
 
     _run(["git", "fetch", "--all", "--prune"], cwd=repo_path)
 
-    # Si la branch ya existe (tarea anterior), reutilizar. Si no, crear.
+    # If the branch already exists (previous task), reuse. Otherwise, create.
     branches = _run(["git", "branch", "--all"], cwd=repo_path)
     branch_exists = any(
         feature_branch == b.strip().lstrip("* ").replace("remotes/origin/", "")
@@ -56,7 +56,7 @@ def create_worktree(
     )
 
     if branch_exists:
-        # Borramos la branch para evitar conflictos (las tareas son efímeras por ahora)
+        # We delete the branch to avoid conflicts (tasks are ephemeral for now)
         _run(["git", "branch", "-D", feature_branch], cwd=repo_path)
 
     _run(
@@ -64,10 +64,10 @@ def create_worktree(
         cwd=repo_path,
     )
 
-    # El worker corre como root, pero los contenedores de agente y runner corren
-    # como UID 1000. Sin este chown, el agente no puede escribir `app.py`, ni
-    # `git add -A` puede escribir en `<repo>/.git/worktrees/<name>/index`, y
-    # el entrypoint no puede borrar `.task-input.json`.
+    # The worker runs as root, but agent and runner containers run as UID
+    # 1000. Without this chown, the agent cannot write `app.py`, nor can
+    # `git add -A` write in `<repo>/.git/worktrees/<name>/index`, and the
+    # entrypoint cannot delete `.task-input.json`.
     admin_dir = repo_path / ".git" / "worktrees" / container_path.name
     _chown_for_agent(container_path)
     if admin_dir.exists():
@@ -77,7 +77,7 @@ def create_worktree(
 
 
 def _chown_for_agent(path: Path) -> None:
-    """Chown recursivo a UID/GID del agente. No-op si no somos root."""
+    """Recursive chown to the agent's UID/GID. No-op if we are not root."""
     try:
         os.chown(path, AGENT_UID, AGENT_GID)
     except PermissionError:

@@ -1,0 +1,49 @@
+# atelier config. Copy this file to the root of YOUR repo (not the atelier repo)
+# with the name .atelier.yml and adapt the commands to your project.
+#
+# EVERY section is optional. Omitting one skips that phase with a warning.
+# If the whole file is missing, the pipeline runs but executes no tests.
+
+# --- Dependency install ---
+# Runs ONCE at the start of the pipeline, before the implementer.
+# If omitted, tests assume deps are already baked into the runner image.
+install:
+  command: "pip install -r requirements.txt && pip install -e ."
+  timeout: 300
+
+# --- Quick tests: GATE before the reviewer ---
+# On failure, the implementer gets the feedback and retries (up to
+# MAX_RETRY_ATTEMPTS). Ideally fast: unit tests, linter, type check.
+quick_tests:
+  command: "pytest tests/unit -x --tb=short && ruff check ."
+  timeout: 120
+
+# --- Full tests: GATE before E2E ---
+# Integration, slower tests, coverage.
+full_tests:
+  command: "pytest tests/ --cov=src --cov-fail-under=80"
+  timeout: 300
+
+# --- E2E: final GATE ---
+# setup/teardown run on the Prefect worker (it has access to the host Docker).
+# The test command itself runs in a container with Playwright preinstalled.
+e2e_tests:
+  setup: "docker compose -f docker-compose.test.yml up -d --wait"
+  command: "pytest tests/e2e"
+  teardown: "docker compose -f docker-compose.test.yml down -v"
+  timeout: 900
+
+# --- Preview: spin up the project with the changes applied ---
+# Runs AFTER every gate has passed. The pipeline assigns a free port and
+# exposes it as $PREVIEW_PORT. Multiple previews can coexist, each on its
+# own port.
+#
+# The resulting URL is available at GET /tasks/{id}/preview; the preview is
+# torn down with DELETE /tasks/{id}/preview.
+#
+# Your docker-compose.preview.yml must map "${PREVIEW_PORT}:<internal-port>".
+preview:
+  up: "docker compose -f docker-compose.preview.yml up -d --wait"
+  down: "docker compose -f docker-compose.preview.yml down -v"
+  url: "http://localhost:${PREVIEW_PORT}"
+  timeout: 180

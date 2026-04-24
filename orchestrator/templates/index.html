@@ -3,10 +3,23 @@
 
 <section class="section">
   <div class="section-head">
-    <h2 class="section-title">Nueva tarea</h2>
-    <span class="section-meta">fire-and-forget · {{ default_model }}</span>
+    <h2 class="section-title">New task</h2>
+    <span class="section-meta">fire-and-forget</span>
   </div>
 
+  {% if not providers %}
+    <div class="empty-state">
+      You don't have any saved LLM providers.<br>
+      <span class="sub">
+        {% if crypto_available %}
+          <a href="/providers-ui" style="color: var(--accent-2); border-bottom: 1px solid var(--accent-2);">Configure one on the providers screen</a>
+          before launching tasks.
+        {% else %}
+          Set <code>MASTER_ENCRYPTION_KEY</code> in your <code>.env</code> and restart the orchestrator.
+        {% endif %}
+      </span>
+    </div>
+  {% else %}
   <form method="post" action="/ui/tasks" class="panel">
     <div class="field">
       <label class="field-label" for="prompt">Prompt</label>
@@ -15,27 +28,27 @@
       <div class="prompt-toolbar">
         <label class="file-picker" id="prompt-file-picker">
           <span class="glyph">+</span>
-          <span id="prompt-file-label">Cargar desde archivo .md</span>
+          <span id="prompt-file-label">Load from .md file</span>
           <input type="file" id="prompt_file" accept=".md,.markdown,text/markdown,text/plain">
         </label>
-        <span class="prompt-char-count"><span id="prompt-char-count">0</span> caracteres</span>
+        <span class="prompt-char-count"><span id="prompt-char-count">0</span> characters</span>
       </div>
     </div>
 
     <div class="field field-repo">
       <label class="field-label">
-        Proyecto
-        <span class="hint-icon" tabindex="0" role="img" aria-label="Ayuda"
-              data-tooltip="Sólo se pueden seleccionar directorios inicializados con git.">ⓘ</span>
+        Project
+        <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+              data-tooltip="Only git-initialized directories can be selected.">ⓘ</span>
       </label>
       <div class="tree-picker">
         <div id="repo-tree-body"
              hx-get="/ui/fs?path=" hx-trigger="load" hx-swap="innerHTML">
-          <div class="tree-loading">Cargando…</div>
+          <div class="tree-loading">Loading…</div>
         </div>
         <div class="tree-footer">
-          <span class="tree-footer-label">Seleccionado</span>
-          <span class="tree-footer-value empty" id="repo-selected-display">ninguno</span>
+          <span class="tree-footer-label">Selected</span>
+          <span class="tree-footer-value empty" id="repo-selected-display">none</span>
         </div>
       </div>
       <input type="hidden" id="repo_path" name="repo_path" required>
@@ -44,14 +57,14 @@
     <div class="field-grid field-grid-2">
       <div class="field">
         <label class="field-label" for="base_branch-input">
-          Rama
-          <span class="hint-icon" tabindex="0" role="img" aria-label="Ayuda"
-                data-tooltip="Rama del proyecto a partir de la cual se creará la rama de trabajo de la tarea.">ⓘ</span>
+          Branch
+          <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+                data-tooltip="Project branch from which the task's working branch will be created.">ⓘ</span>
         </label>
         <div class="combobox" data-for="base_branch">
           <input type="text" class="combobox-input field-input" id="base_branch-input"
                  autocomplete="off" spellcheck="false"
-                 placeholder="Selecciona primero un proyecto" disabled>
+                 placeholder="Select a project first" disabled>
           <div class="combobox-listbox" role="listbox" hidden></div>
         </div>
         <select id="base_branch" name="base_branch" required class="combobox-source"
@@ -64,26 +77,88 @@
         </select>
       </div>
       <div class="field">
-        <label class="field-label" for="model-input">Model</label>
-        <div class="combobox" data-for="model">
-          <input type="text" class="combobox-input field-input" id="model-input"
-                 autocomplete="off" spellcheck="false"
-                 placeholder="Escribe para filtrar…">
-          <div class="combobox-listbox" role="listbox" hidden></div>
-        </div>
-        <select id="model" name="model" required class="combobox-source"
-                hx-get="/ui/models" hx-trigger="load" hx-swap="innerHTML"
-                tabindex="-1" aria-hidden="true">
-          <option value="{{ default_model }}" selected>{{ default_model }}</option>
+        <label class="field-label" for="provider_id">LLM provider</label>
+        <select id="provider_id" name="provider_id" required class="field-input">
+          {% for p in providers %}
+            <option value="{{ p.id }}"
+                    data-model="{{ p.model }}"
+                    data-model-implementer="{{ p.model_implementer }}"
+                    data-model-reviewer="{{ p.model_reviewer }}"
+                    data-model-simplifier="{{ p.model_simplifier }}"
+                    {% if loop.first %}selected{% endif %}>
+              {{ p.label }}
+            </option>
+          {% endfor %}
         </select>
       </div>
     </div>
 
+    <div class="field" style="margin-top: 16px;">
+      <label class="field-label" for="model-input">
+        Model
+        <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
+              data-tooltip="Used for all 3 roles. Auto-filled with the provider's default; you can change it or filter by typing.">ⓘ</span>
+      </label>
+      <div class="combobox" data-for="model">
+        <input type="text" class="combobox-input field-input" id="model-input"
+               autocomplete="off" spellcheck="false"
+               placeholder="Loading provider models…">
+        <div class="combobox-listbox" role="listbox" hidden></div>
+      </div>
+      <select id="model" name="model" class="combobox-source" tabindex="-1" aria-hidden="true"></select>
+    </div>
+
+    <details class="role-overrides" id="role-overrides-details">
+      <summary>
+        Vary model per role <span class="role-overrides-hint">(optional, for this task)</span>
+      </summary>
+      <p class="role-overrides-desc">
+        Override the model for a specific role only for this task.
+        Empty = uses the model above (or the provider's if an override is already configured).
+      </p>
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="model_implementer-input">Implementer</label>
+          <div class="combobox" data-for="model_implementer">
+            <input type="text" class="combobox-input field-input" id="model_implementer-input"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="(use default)">
+            <div class="combobox-listbox" role="listbox" hidden></div>
+          </div>
+          <select id="model_implementer" name="model_implementer" class="combobox-source role-model-source"
+                  tabindex="-1" aria-hidden="true"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="model_reviewer-input">Reviewer</label>
+          <div class="combobox" data-for="model_reviewer">
+            <input type="text" class="combobox-input field-input" id="model_reviewer-input"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="(use default)">
+            <div class="combobox-listbox" role="listbox" hidden></div>
+          </div>
+          <select id="model_reviewer" name="model_reviewer" class="combobox-source role-model-source"
+                  tabindex="-1" aria-hidden="true"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="model_simplifier-input">Simplifier</label>
+          <div class="combobox" data-for="model_simplifier">
+            <input type="text" class="combobox-input field-input" id="model_simplifier-input"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="(use default)">
+            <div class="combobox-listbox" role="listbox" hidden></div>
+          </div>
+          <select id="model_simplifier" name="model_simplifier" class="combobox-source role-model-source"
+                  tabindex="-1" aria-hidden="true"></select>
+        </div>
+      </div>
+    </details>
+
     <div class="actions">
       <span class="legend">implementer → reviewer → simplifier → tests</span>
-      <button type="submit" class="btn">Lanzar tarea</button>
+      <button type="submit" class="btn">Launch task</button>
     </div>
   </form>
+  {% endif %}
 
   <script>
     (function () {
@@ -92,9 +167,10 @@
       const pickerEl = document.getElementById('prompt-file-picker');
       const labelEl = document.getElementById('prompt-file-label');
       const countEl = document.getElementById('prompt-char-count');
+      if (!promptEl) return;   // empty-state, form not rendered
 
       const updateCount = () => {
-        countEl.textContent = promptEl.value.length.toLocaleString('es');
+        countEl.textContent = promptEl.value.length.toLocaleString('en');
       };
       promptEl.addEventListener('input', updateCount);
       updateCount();
@@ -110,11 +186,11 @@
           updateCount();
           promptEl.focus();
         } catch (err) {
-          labelEl.textContent = 'Error leyendo archivo';
+          labelEl.textContent = 'Error reading file';
         }
       });
 
-      // Enable the branch combobox only when a project has been chosen.
+      // Enable the branch combobox only after picking a project.
       const repoInput = document.getElementById('repo_path');
       const branchInput = document.getElementById('base_branch-input');
       if (repoInput && branchInput) {
@@ -124,13 +200,84 @@
         repoInput.addEventListener('change', syncBranchEnabled);
         syncBranchEnabled();
       }
+
+      // Load provider models into all comboboxes (main + 3 per role).
+      const providerEl = document.getElementById('provider_id');
+      const modelSelect = document.getElementById('model');
+      const modelInput = document.getElementById('model-input');
+      const roleSelects = {
+        implementer: document.getElementById('model_implementer'),
+        reviewer:    document.getElementById('model_reviewer'),
+        simplifier:  document.getElementById('model_simplifier'),
+      };
+
+      const setSingle = (selectEl, inputEl, value) => {
+        if (!selectEl) return;
+        selectEl.innerHTML = value
+          ? `<option value="${value}" selected>${value}</option>`
+          : '';
+        if (inputEl) inputEl.value = value || '';
+        selectEl.dispatchEvent(new Event('htmx:afterSwap'));
+      };
+
+      const populateAll = (html) => {
+        // Main model: populate with the returned list, selecting
+        // the provider's default.
+        modelSelect.innerHTML = html;
+        // Pre-select the provider's default if it appears in the list.
+        const opt = providerEl.options[providerEl.selectedIndex];
+        const defaultModel = opt ? (opt.dataset.model || '') : '';
+        const match = Array.from(modelSelect.options).find(o => o.value === defaultModel);
+        if (match) {
+          modelSelect.value = defaultModel;
+          modelInput.value = defaultModel;
+        }
+        modelInput.placeholder = 'Type to filter…';
+        modelSelect.dispatchEvent(new Event('htmx:afterSwap'));
+
+        // Per-role comboboxes: clone the same options, starting empty.
+        // The user fills them in if they want an override for this task.
+        for (const role of ['implementer', 'reviewer', 'simplifier']) {
+          const sel = roleSelects[role];
+          if (!sel) continue;
+          // Leave an empty option for "(use default)" and then the list.
+          sel.innerHTML = '<option value=""></option>' + html;
+          sel.value = '';
+          const inp = document.getElementById(`model_${role}-input`);
+          if (inp) inp.value = '';
+          sel.dispatchEvent(new Event('htmx:afterSwap'));
+        }
+      };
+
+      const loadModelsForCurrentProvider = async () => {
+        const id = providerEl.value;
+        if (!id) return;
+        // While loading, set the provider's default as the sole option.
+        const opt = providerEl.options[providerEl.selectedIndex];
+        const def = opt ? (opt.dataset.model || '') : '';
+        setSingle(modelSelect, modelInput, def);
+        modelInput.placeholder = 'Loading provider models…';
+
+        try {
+          const resp = await fetch(`/ui/providers/${encodeURIComponent(id)}/models`);
+          const html = await resp.text();
+          populateAll(html);
+        } catch (err) {
+          // Fallback: keep only the default. Submit will still work.
+          setSingle(modelSelect, modelInput, def);
+          modelInput.placeholder = 'Could not load models (uses default)';
+        }
+      };
+
+      providerEl.addEventListener('change', loadModelsForCurrentProvider);
+      loadModelsForCurrentProvider();
     })();
   </script>
 </section>
 
 <section class="section">
   <div class="section-head">
-    <h2 class="section-title">Tareas recientes</h2>
+    <h2 class="section-title">Recent tasks</h2>
     <span class="section-meta">auto-refresh · 3s</span>
   </div>
 
@@ -142,8 +289,8 @@
 {% if previews %}
 <section class="section">
   <div class="section-head">
-    <h2 class="section-title">Entornos activos</h2>
-    <span class="section-meta">{{ previews|length }} corriendo</span>
+    <h2 class="section-title">Active environments</h2>
+    <span class="section-meta">{{ previews|length }} running</span>
   </div>
 
   <div class="panel" style="padding: 4px 16px;">
@@ -152,7 +299,7 @@
         <tr>
           <th style="width: 6rem;">Task</th>
           <th>URL</th>
-          <th style="width: 6rem;">Puerto</th>
+          <th style="width: 6rem;">Port</th>
           <th style="width: 7rem; text-align:right;"></th>
         </tr>
       </thead>
@@ -169,9 +316,9 @@
           <td style="text-align:right;">
             {% if p.flow_run_id %}
             <form method="post" action="/ui/tasks/{{ p.flow_run_id }}/preview/teardown" style="margin:0; display:inline;">
-              <button type="submit" class="btn small ghost">Tirar</button>
+              <button type="submit" class="btn small ghost">Tear down</button>
             </form>
-            {% else %}<span class="dash" style="color: var(--text-4); font-size: 12px;">sin flow run</span>{% endif %}
+            {% else %}<span class="dash" style="color: var(--text-4); font-size: 12px;">no flow run</span>{% endif %}
           </td>
         </tr>
       {% endfor %}

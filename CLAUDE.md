@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Stack
 
-Prefect 3 orchestrates a multi-agent code-modification pipeline. Agents (implementer / reviewer / simplifier) run as ephemeral Docker containers launched by a Prefect worker. Test gates run in separate runner containers. An external Ollama server (on the Windows host) provides the LLM. A thin FastAPI orchestrator translates HTTP → `run_deployment("pipeline/default", ...)`. README.md is the canonical overview; this file captures only the non-obvious bits.
+Prefect 3 orchestrates a multi-agent code-modification pipeline. Agents (implementer / reviewer / simplifier) run as ephemeral Docker containers launched by a Prefect worker. Test gates run in separate runner containers. An external Ollama server (on the Windows host) provides the LLM. A thin FastAPI orchestrator translates HTTP → `run_deployment("atelier/default", ...)`. README.md is the canonical overview; this file captures only the non-obvious bits.
 
 ## Common commands
 
@@ -15,14 +15,14 @@ docker compose up -d --build
 # Watch the worker (where flows actually run)
 docker compose logs -f prefect-worker
 
-# Prepare a throwaway target repo under ./repos/target-repo
-bash scripts/init-test-repo.sh
-sudo chown -R 1000:1000 repos worktrees logs   # worker runs as UID 1000
+# Drop a target repo under ./repos/<repo-name> (must contain .git).
+# Worker runs as UID 1000, so fix ownership if your host user differs:
+sudo chown -R 1000:1000 repos worktrees logs
 
-# Fire a task
+# Fire a task (use the UI at :8000 or POST /tasks with a JSON body)
 curl -X POST http://localhost:8000/tasks \
   -H "Content-Type: application/json" \
-  -d @tasks/example.json
+  -d '{"prompt": "...", "repo_path": "<repo-name>", "base_branch": "main"}'
 # Prefect UI:  http://localhost:4200
 # Markdown log per task: logs/task-<id>.md
 ```
@@ -32,16 +32,16 @@ curl -X POST http://localhost:8000/tasks \
 The compose file bakes code into images; edits on disk are NOT picked up live.
 
 - Flow / orchestrator python code (`flows/`, `orchestrator/`) → `docker compose build prefect-worker orchestrator && docker compose up -d --force-recreate prefect-worker orchestrator`
-- Agent prompts or `agents/` code → `docker compose build agent-builder` (the builder is a one-shot that just produces `pipeline-agent:latest`; the worker `docker run`s that image per agent invocation)
+- Agent prompts or `agents/` code → `docker compose build agent-builder` (the builder is a one-shot that just produces `atelier-agent:latest`; the worker `docker run`s that image per agent invocation)
 - Runner test images → `docker compose build runner-quick-builder runner-e2e-builder`
 
-There are no unit tests in this repo; the "tests" are full pipeline runs against `repos/target-repo/`.
+There are no unit tests in this repo; the "tests" are full pipeline runs against whatever target repo the user drops under `./repos/`.
 
 ## Architecture — the non-obvious parts
 
 ### Two-image pattern: worker vs. agent/runner
 
-`prefect-worker` runs the flow code, but the per-agent and per-test work happens inside **separately-built images** (`pipeline-agent`, `pipeline-runner-quick`, `pipeline-runner-e2e`) that the worker launches via `/var/run/docker.sock` mounted from the host. The `*-builder` services in `docker-compose.yml` exist only to build these images at `compose up` — they run `entrypoint: ["true"]` and exit immediately; the worker's `depends_on: service_completed_successfully` gates on them. Do not add runtime commands to those builder services.
+`prefect-worker` runs the flow code, but the per-agent and per-test work happens inside **separately-built images** (`atelier-agent`, `atelier-runner-quick`, `atelier-runner-e2e`) that the worker launches via `/var/run/docker.sock` mounted from the host. The `*-builder` services in `docker-compose.yml` exist only to build these images at `compose up` — they run `entrypoint: ["true"]` and exit immediately; the worker's `depends_on: service_completed_successfully` gates on them. Do not add runtime commands to those builder services.
 
 ### Host/container path dualism
 
@@ -53,7 +53,7 @@ Because the worker launches containers on the host's Docker daemon, every bind-m
 
 ### The pipeline flow and its retry loop (`flows/pipeline.py`)
 
-Linear phases: `create-worktree → load-config → install-deps → implementer → quick-tests → reviewer → simplifier → full-tests → e2e-setup → e2e-tests → e2e-teardown`. Three **deterministic gates** (quick-tests, full-tests, e2e-tests) and the reviewer's `changes_requested` verdict can each loop the whole attempt back to the implementer with `previous_feedback`. The for/else in `pipeline_flow` bounds retries at `PIPELINE_MAX_RETRY_ATTEMPTS + 1` attempts; failures after the last attempt raise `RuntimeError` to mark the flow failed. `e2e-teardown` is wrapped in try/finally so it always runs.
+Linear phases: `create-worktree → load-config → install-deps → implementer → quick-tests → reviewer → simplifier → full-tests → e2e-setup → e2e-tests → e2e-teardown`. Three **deterministic gates** (quick-tests, full-tests, e2e-tests) and the reviewer's `changes_requested` verdict can each loop the whole attempt back to the implementer with `previous_feedback`. The for/else in `pipeline_flow` bounds retries at `MAX_RETRY_ATTEMPTS + 1` attempts; failures after the last attempt raise `RuntimeError` to mark the flow failed. `e2e-teardown` is wrapped in try/finally so it always runs.
 
 ### Orchestrator ↔ agent contract
 
@@ -65,17 +65,17 @@ The worker does NOT stream anything into the agent container. It writes `TaskInp
 
 ### E2E setup/teardown runs on the worker, NOT in the runner
 
-`orchestrator/services.py` runs `docker compose up/down` for E2E services directly from the worker (which has the Docker socket), with `cwd=<host_worktree>`. Runners deliberately do not get the socket. If a user's `.pipeline-ia.yml` needs Docker-in-Docker for tests themselves, that's a new capability — don't "fix" it by mounting the socket into the runner.
+`orchestrator/services.py` runs `docker compose up/down` for E2E services directly from the worker (which has the Docker socket), with `cwd=<host_worktree>`. Runners deliberately do not get the socket. If a user's `.atelier.yml` needs Docker-in-Docker for tests themselves, that's a new capability — don't "fix" it by mounting the socket into the runner.
 
-### `.pipeline-ia.yml` lives in the TARGET repo
+### `.atelier.yml` lives in the TARGET repo
 
-The config that drives test gates (`install`, `quick_tests`, `full_tests`, `e2e_tests`) is a file the user places at the root of THEIR repo — not in this pipeline repo. See `.pipeline-ia.yml.example`. Absence of the file is not an error: `load-config` returns `None` and all gates `skipped`. Absence of an individual section skips just that gate.
+The config that drives test gates (`install`, `quick_tests`, `full_tests`, `e2e_tests`) is a file the user places at the root of THEIR repo — not in this pipeline repo. See `.atelier.yml.example`. Absence of the file is not an error: `load-config` returns `None` and all gates `skipped`. Absence of an individual section skips just that gate.
 
 ## Gotchas
 
 - **Ollama host URL**: the pipeline talks to Ollama running on the Windows host, not in compose. `OLLAMA_EXTERNAL_URL` in `.env` must match the WSL→Windows gateway (`ip route show | grep -i default | awk '{ print $3 }'`) and can drift between reboots.
 - **UID 1000**: the worker runs as 1000, so `repos/`, `worktrees/`, `logs/` must be owned by 1000 or git operations will fail with "dubious ownership". The worker image sets `safe.directory '*'` as a backstop but permissions still bite on writes.
 - **Repo path sandbox**: `orchestrator/main.py::_resolve_repo_path` hard-requires the resolved path to be under `/repos` and contain `.git`. Don't add knobs to bypass this.
-- **`pipeline-runner/` directory**: this is a standalone "addon package" with its own README — a drop-in bundle showing what was added to bring test gates into the project. The canonical copies of those files already live in `orchestrator/`, `flows/`, `agents/`, `docker/`; edit those, not the bundle.
+- **`runner-bundle/` directory**: this is a standalone "addon package" with its own README — a drop-in bundle showing what was added to bring test gates into the project. The canonical copies of those files already live in `orchestrator/`, `flows/`, `agents/`, `docker/`; edit those, not the bundle.
 - **Empty branch reuse**: `create_worktree` force-deletes a pre-existing feature branch (`git branch -D`) before recreating the worktree. Tasks are treated as ephemeral — don't assume the branch from a previous run survives.
 - **The `from prefect import flow` import at the very top of `orchestrator/main.py`** is a workaround for a Prefect 3 circular-import bug; don't "tidy" it down into the rest of the imports.

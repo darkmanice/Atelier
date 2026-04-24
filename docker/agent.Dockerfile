@@ -1,5 +1,4 @@
-# Imagen única para los tres roles de agente.
-# Idéntica a la versión que ya funciona en pipeline-ia.
+# Single image shared by the three agent roles (implementer, reviewer, simplifier).
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,14 +17,14 @@ RUN chown -R agent:agent /app
 
 USER agent
 
-RUN git config --global user.email "agent@pipeline-ia.local" && \
-    git config --global user.name "pipeline-ia agent" && \
+RUN git config --global user.email "agent@atelier.local" && \
+    git config --global user.name "atelier agent" && \
     git config --global --add safe.directory '*'
 
-# Evitar que LiteLLM/Aider hagan peticiones HTTP externas al arrancar
-# (bloquean en timeouts cuando la red no puede llegar a ciertos CDN)
+# Stop LiteLLM/Aider from making external HTTP requests on startup
+# (they hang on timeouts when the network cannot reach certain CDNs).
+# OPENAI_API_BASE / OPENAI_API_KEY are injected per-container by the worker.
 ENV PYTHONPATH=/app
-ENV OLLAMA_API_BASE=http://ollama:11434
 ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 ENV AIDER_ANALYTICS=false
 ENV DISABLE_TELEMETRY=1

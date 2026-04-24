@@ -1,8 +1,8 @@
 """
-Simplifier: busca simplificaciones en los ficheros tocados por el implementer
-y, si las hay, las aplica y commitea.
+Simplifier: looks for simplifications in the files touched by the implementer
+and, if any, applies and commits them.
 
-Regla de oro: NO debe cambiar comportamiento. Solo forma. Si duda, no toca.
+Golden rule: it must NOT change behavior. Only form. When in doubt, leave it.
 """
 from __future__ import annotations
 

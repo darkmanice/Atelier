@@ -1,35 +1,46 @@
 """
-Cliente Ollama mínimo y compartido.
+Minimal LLM client, generic against OpenAI-compatible endpoints.
 
-- Abstrae la llamada a /api/chat con tool-calling.
-- Hace retry ligero en errores transitorios de red.
-- Devuelve un tipo estructurado en vez del dict crudo de la librería.
-
-Nota: usamos la librería oficial `ollama` como transporte, pero no exponemos
-su tipo de respuesta fuera de este módulo. Así, si mañana cambiamos a Claude
-API o a vLLM directamente, solo tocamos este fichero.
+- Uses the official `openai` SDK as transport (supports Chat Completions +
+  standard tool calling). Works against OpenAI, NVIDIA (build.nvidia.com),
+  OpenRouter, Groq, DeepSeek, vLLM, LM Studio and any compatible gateway.
+  Ollama too, via its `/v1` endpoint.
+- Reads `base_url` and `api_key` from the container environment
+  (OPENAI_API_BASE / OPENAI_API_KEY). The orchestrator injects them when
+  launching the agent; this way the key never touches `.task-input.json` or
+  the worktree.
+- Returns its own `LLMResponse` type, not the raw SDK response, so the rest
+  of the code does not depend on the specific library.
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from ollama import Client
+from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 
 
 @dataclass
 class LLMResponse:
     content: str
     tool_calls: list[dict[str, Any]]   # [{"name": ..., "arguments": {...}}, ...]
-    raw: dict                           # respuesta bruta por si hace falta debug
+    raw: dict                           # raw response in case debugging is needed
 
 
-class OllamaClient:
-    def __init__(self, host: str, model: str, num_ctx: int = 32768):
-        self.client = Client(host=host)
+class LLMClient:
+    def __init__(self, model: str, base_url: str | None = None, api_key: str | None = None):
+        # Priority: explicit args > env. The normal path is "via env var
+        # injected by the worker". The args exist for tests/debug.
+        resolved_base = base_url or os.environ.get("OPENAI_API_BASE") or ""
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY") or "sk-no-auth"
+        if not resolved_base:
+            raise RuntimeError(
+                "LLMClient: missing base_url (set OPENAI_API_BASE or pass base_url=)"
+            )
+        self.client = OpenAI(base_url=resolved_base, api_key=resolved_key)
         self.model = model
-        self.num_ctx = num_ctx
 
     def chat(
         self,
@@ -39,25 +50,21 @@ class OllamaClient:
         max_retries: int = 2,
     ) -> LLMResponse:
         """
-        Llama al modelo. `tools` es la lista de tool definitions en formato OpenAI/Ollama.
-        Devuelve tanto el content como los tool_calls parseados.
+        Call the model. `tools` are tool definitions in OpenAI format.
+        Normalize the output: returns `content` and `tool_calls` flattened to
+        `[{"name": ..., "arguments": dict}, ...]` as `OllamaClient` did.
         """
-        options = {
-            "temperature": temperature,
-            "num_ctx": self.num_ctx,
-        }
-
         last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                resp = self.client.chat(
+                resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    tools=tools,
-                    options=options,
+                    tools=_wrap_tools(tools) if tools else None,
+                    temperature=temperature,
                 )
                 break
-            except Exception as e:
+            except (APIConnectionError, RateLimitError, APIError) as e:
                 last_error = e
                 if attempt == max_retries:
                     raise
@@ -66,12 +73,36 @@ class OllamaClient:
             assert last_error is not None
             raise last_error
 
-        msg = resp.get("message", {})
+        choice = resp.choices[0]
+        msg = choice.message
+
+        tool_calls: list[dict[str, Any]] = []
+        for tc in (msg.tool_calls or []):
+            # arguments comes as a JSON-string per the OpenAI contract.
+            import json
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {"_raw": tc.function.arguments}
+            tool_calls.append({"name": tc.function.name, "arguments": args})
+
         return LLMResponse(
-            content=msg.get("content", "") or "",
-            tool_calls=[
-                {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}
-                for tc in (msg.get("tool_calls") or [])
-            ],
-            raw=dict(resp),
+            content=msg.content or "",
+            tool_calls=tool_calls,
+            raw=resp.model_dump(),
         )
+
+
+def _wrap_tools(tools: list[dict]) -> list[dict]:
+    """
+    Accepts both the Ollama "raw" format (each tool is already `{type, function}`)
+    and the "function-only" format (each tool is `{name, description, parameters}`).
+    The OpenAI SDK requires `{type: "function", function: {...}}`.
+    """
+    wrapped: list[dict] = []
+    for t in tools:
+        if "function" in t and "type" in t:
+            wrapped.append(t)
+        else:
+            wrapped.append({"type": "function", "function": t})
+    return wrapped

@@ -1,6 +1,6 @@
 """
-Lanza contenedores efímeros de agente. Versión final que ya funciona:
-input por fichero (no stdin), paths duales, red del compose.
+Launches ephemeral agent containers. Final working version:
+input via file (not stdin), dual paths, compose network.
 """
 from __future__ import annotations
 
@@ -34,7 +34,10 @@ class ContainerRunError(RuntimeError):
 
 
 def run_agent(
-    task_input: TaskInput, host_worktree_path: Path, container_worktree_path: Path
+    task_input: TaskInput,
+    host_worktree_path: Path,
+    container_worktree_path: Path,
+    api_key: str = "",
 ) -> AgentResult:
     try:
         _client.images.get(AGENT_IMAGE)
@@ -43,12 +46,13 @@ def run_agent(
             f"Image {AGENT_IMAGE} not found. Rebuild with: docker compose build agent-builder"
         ) from e
 
-    # Escribir input en fichero dentro del worktree (visible desde el agente en /workspace)
+    # Write input to a file inside the worktree (visible from the agent at /workspace)
+    # NOTE: `api_key` NEVER goes into task_input; it is injected separately as an env var.
     input_file = container_worktree_path / ".task-input.json"
     input_file.write_text(task_input.model_dump_json(), encoding="utf-8")
     os.chmod(input_file, 0o644)
-    # El worker lo escribe como root; el agente corre como UID 1000 y debe
-    # poder unlink()earlo (entrypoint.py lo borra antes de arrancar).
+    # The worker writes it as root; the agent runs as UID 1000 and must
+    # be able to unlink() it (entrypoint.py deletes it before starting).
     try:
         os.chown(input_file, AGENT_UID, AGENT_GID)
     except PermissionError:
@@ -59,6 +63,9 @@ def run_agent(
         task_input.role, task_input.task_id,
     )
 
+    # LLM config to the agent via standard OpenAI SDK + LiteLLM env vars.
+    # The key only lives in the container process during its execution
+    # (auto_remove=False here, but we remove it in the finally below).
     container = _client.containers.create(
         image=AGENT_IMAGE,
         detach=True,
@@ -66,6 +73,8 @@ def run_agent(
             "AGENT_ROLE": task_input.role.value,
             "TASK_ID": str(task_input.task_id),
             "TASK_INPUT_FILE": "/workspace/.task-input.json",
+            "OPENAI_API_BASE": task_input.base_url,
+            "OPENAI_API_KEY": api_key or "sk-no-auth",
         },
         volumes={
             str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
@@ -76,7 +85,7 @@ def run_agent(
         nano_cpus=int(AGENT_CPU_LIMIT * 1_000_000_000),
         network=AGENT_NETWORK,
         auto_remove=False,
-        name=f"pipeline-agent-task-{task_input.task_id}-{task_input.role.value}",
+        name=f"atelier-agent-task-{task_input.task_id}-{task_input.role.value}",
     )
 
     try:

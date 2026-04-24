@@ -1,7 +1,7 @@
-# Runner para tests quick y full.
-# Soporta proyectos Python (pytest) y JS/TS (jest, vitest, npm test).
+# Runner for quick and full tests.
+# Supports Python projects (pytest) and JS/TS (jest, vitest, npm test).
 #
-# No incluye browsers — para eso está pipeline-runner-e2e.
+# Does NOT include browsers — that is what atelier-runner-e2e is for.
 
 FROM python:3.12-slim
 
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Herramientas de test comunes que tener pre-instaladas ahorra segundos por tarea
+# Common test tooling pre-installed — saves seconds per task
 RUN pip install --no-cache-dir \
     pytest==8.3.3 \
     pytest-cov==5.0.0 \
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir \
     httpx==0.27.2 \
     requests==2.32.3
 
-# pnpm y yarn por si los proyectos JS los usan
+# pnpm and yarn in case JS projects use them
 RUN npm install -g pnpm yarn
 
 RUN useradd -m -u 1000 runner && mkdir -p /workspace && chown runner:runner /workspace
@@ -34,8 +34,8 @@ RUN useradd -m -u 1000 runner && mkdir -p /workspace && chown runner:runner /wor
 USER runner
 WORKDIR /workspace
 
-RUN git config --global user.email "runner@pipeline-ia.local" && \
-    git config --global user.name "pipeline-ia runner" && \
+RUN git config --global user.email "runner@atelier.local" && \
+    git config --global user.name "atelier runner" && \
     git config --global --add safe.directory '*'
 
-# Entrypoint vacío: el runner se invoca con "sh -c '<comando>'" por el caller
+# No entrypoint: the caller invokes the runner with "sh -c '<command>'"

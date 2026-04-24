@@ -1,195 +1,262 @@
-# pipeline-ia-prefect
+# Atelier
 
-Pipeline de agentes IA con **Prefect 3** como orquestador. Mantiene el Patrón A:
-contenedores efímeros por agente, Ollama en el host Windows, FastAPI como
-entrada HTTP. Pero la FSM y la cola las hace Prefect.
+> This is a personal project to learn how to orchestrate multi-agent
+> pipelines: agent roles, test gates as deterministic control, retry loops
+> with feedback, and ephemeral compute per task.
 
-## Ganancia respecto al proyecto anterior
+Multi-agent code-modification pipeline orchestrated with Prefect 3. It takes a
+task (prompt + target repo), launches specialized AI agents (`implementer` →
+`reviewer` → `simplifier`) in ephemeral Docker containers, runs deterministic
+test gates between phases, and produces a branch with the changes ready for
+human review.
 
-- **UI visual** en `http://localhost:4200` con timeline de cada tarea, logs por task,
-  reintentos, tiempos, parámetros.
-- **Reintentos automáticos** configurables por task.
-- **Persistencia de estado gratis** (no mantenemos SQLite).
-- Menos código custom (≈40% menos).
+- **Prefect UI** at `http://localhost:4200` with per-run timeline, logs, and
+  retries.
+- **FastAPI** at `http://localhost:8000` with its own UI and REST API.
+- **Per-task markdown log** at `logs/task-<id>.md`.
+- **Automatic retries**: any failed test gate or a `changes_requested` verdict
+  from the reviewer loops the pipeline back with feedback.
 
-## Arquitectura
+---
+
+## Architecture
 
 ```
 ┌───────────────────────────────────────────────────────┐
-│ docker compose                                        │
+│ docker compose (atelier_network)                      │
 │                                                       │
 │  ┌──────────────┐  ┌──────────────┐                   │
 │  │ prefect-     │  │ orchestrator │  FastAPI :8000    │
-│  │ server :4200 │  │  (FastAPI)   │  → Prefect API    │
+│  │ server :4200 │◄─┤  (FastAPI)   │  UI + API         │
 │  │  UI + API    │  └──────────────┘                   │
-│  └──────────────┘                                     │
-│         ▲                                             │
+│  └──────▲───────┘                                     │
 │         │                                             │
 │  ┌──────┴───────┐                                     │
-│  │ prefect-     │  ← ejecuta flows                    │
-│  │ worker       │  ← lanza contenedores-agente        │
+│  │ prefect-     │  ← runs the flows                   │
+│  │ worker       │  ← launches ephemeral containers    │
 │  │              │    via /var/run/docker.sock         │
 │  └──────┬───────┘                                     │
 │         │                                             │
 │         ▼ docker run --rm                             │
-│  ┌──────────────┐  ┌──────────────┐                   │
-│  │ implementer  │  │   reviewer   │   simplifier...   │
-│  │ (efímero)    │  │  (efímero)   │                   │
-│  └──────────────┘  └──────────────┘                   │
-│                                                       │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
+│  │ atelier-     │  │ atelier-     │  │ atelier-     │ │
+│  │ agent        │  │ runner-quick │  │ runner-e2e   │ │
+│  │ (ephemeral)  │  │ (tests)      │  │ (Playwright) │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘ │
 └───────────────────────────────────────────────────────┘
-              │
-              ▼
-       Ollama (Windows host)
+              │                             ▲
+              ▼                             │
+      ┌──────────────┐               ┌──────────────┐
+      │ LLM provider │               │ Target repo  │
+      │ (Ollama,     │               │ (bind mount  │
+      │  NIM, OAI…)  │               │  ./repos/)   │
+      └──────────────┘               └──────────────┘
 ```
 
-## Puesta en marcha
+### Flow phases
+
+`create-worktree → load-config → install-deps → implementer → quick-tests →
+reviewer → simplifier → full-tests → e2e-setup → e2e-tests → e2e-teardown`
+
+There are three **deterministic gates** (`quick-tests`, `full-tests`,
+`e2e-tests`) plus the reviewer's verdict. Any of the four can loop the
+pipeline back to the `implementer` with `previous_feedback`. The retry cap is
+set by `MAX_RETRY_ATTEMPTS`.
+
+---
+
+## Prerequisites
+
+- **Docker** + **Docker Compose v2** (`docker compose`, not `docker-compose`).
+- An **OpenAI-compatible LLM provider**. Built-in presets: Ollama,
+  NVIDIA NIM, OpenAI, OpenRouter.... Any endpoint that speaks
+  `POST /v1/chat/completions` works.
+
+---
+
+## Getting started
 
 ```bash
-# 1. Copia los ficheros de agents/ desde el proyecto anterior que ya funciona:
-cd ~/pipelines/pipeline-ia-prefect
-cp ~/pipelines/pipeline-ia/agents/entrypoint.py agents/
-cp ~/pipelines/pipeline-ia/agents/llm.py agents/
-cp ~/pipelines/pipeline-ia/agents/base.py agents/
-cp ~/pipelines/pipeline-ia/agents/implementer.py agents/
-cp ~/pipelines/pipeline-ia/agents/reviewer.py agents/
-cp ~/pipelines/pipeline-ia/agents/simplifier.py agents/
-cp ~/pipelines/pipeline-ia/agents/tools/__init__.py agents/tools/
-cp ~/pipelines/pipeline-ia/agents/tools/code_tools.py agents/tools/
-cp ~/pipelines/pipeline-ia/scripts/init-test-repo.sh scripts/
-chmod +x scripts/init-test-repo.sh
+# 1. Clone
+git clone <url> atelier && cd atelier
 
-# 2. Configurar .env
+# 2. Prepare .env
 cp .env.example .env
-# Edita .env: ajusta OLLAMA_EXTERNAL_URL con la IP actual del host Windows
-#   ip route show | grep -i default | awk '{ print $3 }'
-# Y el DOCKER_GID del host:
-#   getent group docker | cut -d: -f3
-nano .env
 
-# 3. Levantar todo
+# 3. Generate the internal token (required)
+openssl rand -hex 32   # copy the value into INTERNAL_API_TOKEN in .env
+
+# 4. (Optional) Enable stored LLM providers (encrypted on disk)
+openssl rand -hex 32   # copy into MASTER_ENCRYPTION_KEY in .env
+#   If you lose this key, all stored API keys become unreadable.
+
+# 5. Set the host's docker group GID (for the socket)
+getent group docker | cut -d: -f3   # copy the number into DOCKER_GID in .env
+
+# 6. Bring everything up (first run pulls ~2 GB of images)
 docker compose up -d --build
 
-# 4. Seguir logs del worker para ver que se registra
-docker compose logs -f prefect-worker
-# Cuando veas "Worker 'PipelineWorker' started!" está listo.
-
-# 5. Preparar repo de prueba (si no lo tienes ya)
-bash scripts/init-test-repo.sh
-sudo chown -R 1000:1000 repos worktrees logs
-
-# 6. Lanzar una tarea
-curl -X POST http://localhost:8000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Add a comment saying hello at the top of app.py",
-    "repo_path": "target-repo",
-    "base_branch": "main"
-  }'
-
-# 7. Ver el progreso
-# - UI visual: http://localhost:4200
-# - Log markdown local: tail -f logs/task-*.md
+# 7. Verify
+curl http://localhost:8000/health
+# Orchestrator UI: http://localhost:8000
+# Prefect UI:      http://localhost:4200
 ```
 
-## Endpoints
+### Preparing a target repository
 
-| Método | Endpoint | Descripción |
-|---|---|---|
-| GET | `/health` | Estado del orquestador y Prefect |
-| POST | `/tasks` | Crea un flow run con los parámetros dados |
-| GET | `/tasks` | Lista flow runs recientes |
-| GET | `/tasks/{flow_run_id}` | Detalle de un flow run |
-| GET | `/tasks/{task_id}/log` | Log markdown local |
-
-Para lo visual/interactivo, usa **`http://localhost:4200`** — la UI de Prefect.
-
-## Configuración
-
-Todo configurable via `.env`:
-
-- `OLLAMA_EXTERNAL_URL` — dónde está Ollama (Windows host).
-- `PIPELINE_MODEL` — modelo Ollama a usar (default `gemma4:26b`).
-- `PIPELINE_MAX_CONCURRENT` — tareas paralelas máximas (default 2).
-- `PIPELINE_AGENT_MEM` — memoria por contenedor-agente (default 4g).
-- `PIPELINE_AGENT_TIMEOUT` — segundos (default 2400).
-- `DOCKER_GID` — GID del grupo docker del host.
-
-## Debug
+The worker only runs tasks against repos that live under `./repos/` (or the
+path set in `REPOS_HOST_DIR`). Each one must be a valid git repo (it must
+contain a `.git/` directory). Drop or clone yours in there.
 
 ```bash
-# Estado de los servicios
-docker compose ps
-
-# Logs del flow (cuando hay uno corriendo)
-docker compose logs -f prefect-worker
-
-# Logs del orchestrator (FastAPI)
-docker compose logs -f orchestrator
-
-# Entrar al worker para debuggear
-docker compose exec prefect-worker bash
-
-# Recrear imágenes tras cambios de código
-docker compose build --no-cache prefect-worker
-docker compose up -d --force-recreate prefect-worker
-
-# Si cambias prompts del agente
-docker compose build agent-builder
+# The worker runs as UID 1000 inside the container. If your host user has
+# a different UID, fix ownership on the shared directories:
+sudo chown -R 1000:1000 repos worktrees logs
 ```
 
-## Estructura
+### Firing a task
 
-```
-pipeline-ia-prefect/
-├── docker-compose.yml        ← 4 servicios
-├── .env.example
-├── prefect.yaml              ← deployment declarativo
-├── docker/
-│   ├── worker.Dockerfile     ← extiende prefecthq/prefect:3-latest
-│   ├── orchestrator.Dockerfile
-│   ├── agent.Dockerfile      ← mismo que pipeline-ia
-│   ├── worker-requirements.txt
-│   ├── agent-requirements.txt
-│   └── (orchestrator requirements en orchestrator/)
-├── flows/
-│   └── pipeline.py           ← EL FLOW (reemplaza fsm.py antiguo)
-├── orchestrator/
-│   ├── main.py               ← FastAPI delgado → Prefect API
-│   ├── config.py
-│   ├── worktree.py
-│   ├── container.py          ← idéntico al probado
-│   ├── logger.py
-│   └── requirements.txt
-├── agents/                   ← COPIAR desde pipeline-ia/ que ya funciona
-│   ├── models.py
-│   ├── entrypoint.py
-│   ├── llm.py
-│   ├── base.py
-│   ├── implementer.py
-│   ├── reviewer.py
-│   ├── simplifier.py
-│   └── tools/code_tools.py
-├── scripts/
-│   └── init-test-repo.sh     ← COPIAR desde pipeline-ia/
-├── tasks/
-│   └── example.json
-├── repos/                    ← (runtime) tus repos git
-├── worktrees/                ← (runtime) uno por tarea
-└── logs/                     ← (runtime) markdown por tarea
+Use the UI at `http://localhost:8000`, or send a `POST /tasks` with a JSON
+body. Minimum payload:
+
+```json
+{
+  "prompt": "Describe what you want the agents to do.",
+  "repo_path": "your-repo",
+  "base_branch": "main"
+}
 ```
 
-## Qué cambia respecto al proyecto anterior
+See `TaskCreate` in `orchestrator/main.py` for the full schema (LLM provider
+overrides, per-role model selection, etc.).
 
-**Borrado**:
-- `orchestrator/fsm.py` → `flows/pipeline.py`
-- `orchestrator/scheduler.py` → Prefect gestiona la concurrencia
-- `orchestrator/db.py` → Prefect gestiona el estado
+---
 
-**Modificado**:
-- `orchestrator/main.py` → mucho más corto, solo traduce HTTP → Prefect
+## Environment variables
 
-**Intacto**:
-- Todo `agents/`
-- `orchestrator/container.py`, `worktree.py`, `logger.py`, `config.py`
-- `docker/agent.Dockerfile`
+All settings live in `.env` (start from `.env.example`).
+
+### Required
+
+| Variable | Description |
+|---|---|
+| `INTERNAL_API_TOKEN` | Shared secret between orchestrator and worker. Generate with `openssl rand -hex 32`. |
+| `DEFAULT_MODEL` | Default LLM model id shown in the UI (can be overridden per task). Any model id your provider exposes — e.g. `meta/llama-3.3-70b-instruct`, `gpt-4o-mini`, `qwen2.5-coder:32b`. |
+| `REPOS_HOST_DIR` | Absolute path on the host holding your target repos. Mounted as `/repos` in the worker and orchestrator; every subdirectory under it with `.git/` becomes a selectable target. |
+
+### Optional
+
+| Variable | Default | Description |
+|---|---|---|
+| `MASTER_ENCRYPTION_KEY` | *(empty)* | 32 hex bytes (64 chars). When set, enables stored LLM providers (API keys encrypted at `data/providers.json`). When empty, only the one-shot flow works. **Losing this key = losing every stored API key.** |
+| `MAX_CONCURRENT_TASKS` | `2` | Parallel flow runs allowed in the pool. |
+| `ORCHESTRATOR_PORT` | `8000` | Host port for the FastAPI service. |
+| `AGENT_MEM_LIMIT` | `4g` | Max memory per agent container. |
+| `AGENT_CPU_LIMIT` | `2.0` | CPUs per agent container (decimals allowed). |
+| `AGENT_TIMEOUT_SEC` | `2400` | Per-invocation timeout for the agent container. |
+| `DOCKER_GID` | `988` | GID of the host's `docker` group. Obtain with `getent group docker \| cut -d: -f3`. |
+
+---
+
+## Target-repo configuration: `.atelier.yml`
+
+Place a `.atelier.yml` at the root of your target repo (NOT in the atelier
+repo itself) describing how to install dependencies and run your tests. Every
+section is optional — omitting one just skips that gate with a warning. If
+the file is missing entirely, the pipeline still runs but executes no tests.
+
+See `.atelier.yml.example` for a full template.
+
+---
+
+## Orchestrator API
+
+Main endpoints (all under `http://localhost:${ORCHESTRATOR_PORT}`):
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/health` | Health check. |
+| `POST` | `/tasks` | Creates a flow run. Body: `TaskCreate` (see `orchestrator/main.py`). |
+| `GET` | `/tasks` | Lists flow runs. |
+| `GET` | `/tasks/{id}` | State of a single flow run. |
+| `GET` | `/tasks/{id}/log` | Per-task markdown log (`text/plain`). |
+| `GET` | `/tasks/{id}/preview` | Preview URL if it is up. |
+| `DELETE` | `/tasks/{id}/preview` | Tears the preview down. |
+| `GET` | `/providers` | Lists stored LLM providers (when `MASTER_ENCRYPTION_KEY` is set). |
+| `POST` | `/providers` | Stores a provider (API key encrypted). |
+| `DELETE` | `/providers/{id}` | Deletes a provider. |
+
+There are also `/ui/*` routes returning HTML fragments for the (htmx-friendly)
+UI.
+
+---
+
+## Rebuilds after code changes
+
+The compose file bakes code INTO the images — edits on disk are NOT picked
+up live.
+
+| What changed | What to rebuild |
+|---|---|
+| `flows/` or `orchestrator/` | `docker compose build prefect-worker orchestrator && docker compose up -d --force-recreate prefect-worker orchestrator` |
+| `agents/` or prompts | `docker compose build agent-builder` (it is a one-shot service that produces `atelier-agent:latest` and exits; the worker `docker run`s that image for each invocation) |
+| Runner Dockerfiles | `docker compose build runner-quick-builder runner-e2e-builder` |
+
+---
+
+## Gotchas / Troubleshooting
+
+**"dubious ownership" on git operations.** The worker runs as UID 1000. If
+your host user has a different UID, the mounted directories (`repos/`,
+`worktrees/`, `logs/`) may end up with wrong permissions. Fix:
+
+```bash
+sudo chown -R 1000:1000 repos worktrees logs
+```
+
+The worker image sets `git config --system safe.directory '*'` as a backstop,
+but write permissions are still yours to sort out.
+
+**Container/host path dualism.** The worker launches containers on the host's
+Docker daemon. Any bind mount needs:
+
+- the path as the worker sees it (e.g. `/app/worktrees/task-42`)
+- the path as the host sees it (e.g. `/home/you/atelier/worktrees/task-42`)
+
+That is why `WORKTREES_HOST_DIR` is bind-mounted to itself (same path inside
+and outside the container). Don't change this without understanding what
+breaks.
+
+**Repo-path sandbox.** `orchestrator/main.py::_resolve_repo_path` requires
+the target repo to live under `/repos` and contain `.git`. There is no knob
+to bypass this.
+
+**Same-name branch reuse.** `create_worktree` force-deletes a pre-existing
+feature branch (`git branch -D`) before recreating the worktree. Tasks are
+ephemeral — do not assume the branch from a previous run survives.
+
+**LLM reachable from the worker.** The agent container must be able to reach
+your LLM provider. If you run Ollama on Windows under WSL2, the gateway IP
+can drift between reboots:
+
+```bash
+ip route show | grep -i default | awk '{ print $3 }'
+```
+
+Update the preset from the UI (`/providers`) if you use it.
+
+**E2E with no Docker-in-Docker.** `e2e-setup`/`e2e-teardown` run on the
+worker (which has the Docker socket). Test runners deliberately do NOT get
+the socket. If your tests need to launch containers on their own, that is a
+new capability — not a bug.
+
+**Useful logs.**
+
+```bash
+docker compose logs -f prefect-worker     # where the flows run
+docker compose logs -f orchestrator       # FastAPI
+cat logs/task-<id>.md                     # per-task markdown log
+```
+
+**Prefect UI.** `http://localhost:4200` — per-run timeline, per-task logs,
+retries, timings, parameters.
