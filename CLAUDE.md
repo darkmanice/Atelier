@@ -15,9 +15,9 @@ docker compose up -d --build
 # Watch the worker (where flows actually run)
 docker compose logs -f prefect-worker
 
-# Drop a target repo under ./repos/<repo-name> (must contain .git).
-# Worker runs as UID 1000, so fix ownership if your host user differs:
-sudo chown -R 1000:1000 repos worktrees logs
+# Drop a target repo under ./projects/<repo-name> (must contain .git).
+# Containers run as HOST_UID:HOST_GID, so files stay owned by you — no
+# chown dance required.
 
 # Fire a task (use the UI at :8000 or POST /tasks with a JSON body)
 curl -X POST http://localhost:8000/tasks \
@@ -35,7 +35,7 @@ The compose file bakes code into images; edits on disk are NOT picked up live.
 - Agent prompts or `agents/` code → `docker compose build agent-builder` (the builder is a one-shot that just produces `atelier-agent:latest`; the worker `docker run`s that image per agent invocation)
 - Runner test images → `docker compose build runner-quick-builder runner-e2e-builder`
 
-There are no unit tests in this repo; the "tests" are full pipeline runs against whatever target repo the user drops under `./repos/`.
+There are no unit tests in this repo; the "tests" are full pipeline runs against whatever target repo the user drops under `./projects/`.
 
 ## Architecture — the non-obvious parts
 
@@ -74,8 +74,8 @@ The config that drives test gates (`install`, `quick_tests`, `full_tests`, `e2e_
 ## Gotchas
 
 - **Ollama host URL**: the pipeline talks to Ollama running on the Windows host, not in compose. `OLLAMA_EXTERNAL_URL` in `.env` must match the WSL→Windows gateway (`ip route show | grep -i default | awk '{ print $3 }'`) and can drift between reboots.
-- **UID 1000**: the worker runs as 1000, so `repos/`, `worktrees/`, `logs/` must be owned by 1000 or git operations will fail with "dubious ownership". The worker image sets `safe.directory '*'` as a backstop but permissions still bite on writes.
-- **Repo path sandbox**: `orchestrator/main.py::_resolve_repo_path` hard-requires the resolved path to be under `/repos` and contain `.git`. Don't add knobs to bypass this.
+- **HOST_UID/HOST_GID**: all containers (worker, orchestrator, agent, runners) run with the host user's UID/GID (baked at build time via `ARG HOST_UID/HOST_GID`, and enforced at runtime via `user:` in compose and `user=` in `containers.create()`). `scripts/setup.sh` auto-fills these in `.env`. The worker gets the docker socket via `group_add: [${DOCKER_GID}]`. If you change `HOST_UID`/`HOST_GID`, you must rebuild the images.
+- **Repo path sandbox**: `orchestrator/main.py::_resolve_repo_path` hard-requires the resolved path to be under `/projects` and contain `.git`. Don't add knobs to bypass this.
 - **`runner-bundle/` directory**: this is a standalone "addon package" with its own README — a drop-in bundle showing what was added to bring test gates into the project. The canonical copies of those files already live in `orchestrator/`, `flows/`, `agents/`, `docker/`; edit those, not the bundle.
 - **Empty branch reuse**: `create_worktree` force-deletes a pre-existing feature branch (`git branch -D`) before recreating the worktree. Tasks are treated as ephemeral — don't assume the branch from a previous run survives.
 - **The `from prefect import flow` import at the very top of `orchestrator/main.py`** is a workaround for a Prefect 3 circular-import bug; don't "tidy" it down into the rest of the imports.

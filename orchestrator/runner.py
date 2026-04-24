@@ -21,11 +21,14 @@ from pathlib import Path
 import docker
 from docker.errors import ImageNotFound
 
+from orchestrator.branch_guard import diff_refs, snapshot_refs
 from orchestrator.config import (
     AGENT_CPU_LIMIT,
+    AGENT_GID,
     AGENT_MEM_LIMIT,
     AGENT_NETWORK,
-    REPOS_DIR_HOST,
+    AGENT_UID,
+    host_path_for_project,
 )
 
 log = logging.getLogger(__name__)
@@ -77,6 +80,8 @@ def run_command_in_runner(
     image: str,
     command: str,
     host_worktree_path: Path,
+    container_repo_path: Path,
+    feature_branch: str,
     timeout_sec: int,
     extra_env: dict | None = None,
     mount_docker_socket: bool = False,
@@ -88,6 +93,11 @@ def run_command_in_runner(
         image: Runner image.
         command: Full shell command (passed to `sh -c`).
         host_worktree_path: Path of the worktree ON THE HOST (for bind mount).
+        container_repo_path: Path of the target project as the worker sees it
+            (e.g. /projects/<name>). Only this single project is mounted into
+            the runner — siblings under /projects are invisible.
+        feature_branch: Branch the task is allowed to modify. Any other ref
+            change detected after the runner exits marks the run as failed.
         timeout_sec: Hard timeout.
         extra_env: Additional environment variables.
         mount_docker_socket: If True, mounts /var/run/docker.sock
@@ -97,6 +107,8 @@ def run_command_in_runner(
     """
     _ensure_image(image)
 
+    pre_refs = snapshot_refs(container_repo_path)
+
     env = {
         "CI": "true",
         "PYTHONUNBUFFERED": "1",
@@ -104,9 +116,11 @@ def run_command_in_runner(
     if extra_env:
         env.update(extra_env)
 
+    host_project_path = host_path_for_project(container_repo_path)
+
     volumes: dict = {
         str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
-        str(REPOS_DIR_HOST): {"bind": "/repos", "mode": "rw"},
+        str(host_project_path): {"bind": str(container_repo_path), "mode": "rw"},
     }
     if mount_docker_socket:
         volumes["/var/run/docker.sock"] = {
@@ -119,6 +133,7 @@ def run_command_in_runner(
         image=image,
         command=["sh", "-c", command],
         detach=True,
+        user=f"{AGENT_UID}:{AGENT_GID}",
         environment=env,
         volumes=volumes,
         working_dir="/workspace",
@@ -156,6 +171,20 @@ def run_command_in_runner(
         duration = time.time() - start_time
         stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
         stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+
+        violations = diff_refs(
+            pre_refs, snapshot_refs(container_repo_path), feature_branch
+        )
+        if violations:
+            log.error("Ref sandbox violation in runner: %s", violations)
+            return RunnerResult(
+                success=False,
+                exit_code=-1,
+                stdout=stdout,
+                stderr="Branch sandbox violation: " + "; ".join(violations),
+                duration_seconds=duration,
+                command=command,
+            )
 
         return RunnerResult(
             success=(exit_code == 0),

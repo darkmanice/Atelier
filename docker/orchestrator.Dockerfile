@@ -2,6 +2,9 @@
 # bugs around Prefect's internal Pydantic models.
 FROM prefecthq/prefect:3-latest
 
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
 WORKDIR /app
 
 # Install only what Prefect does NOT already ship.
@@ -19,7 +22,7 @@ COPY orchestrator/ /app/orchestrator/
 COPY agents/models.py /app/agents/models.py
 COPY agents/__init__.py /app/agents/__init__.py
 
-RUN mkdir -p /app/logs
+RUN mkdir -p /app/logs /app/data /app/.prefect && chown -R ${HOST_UID}:${HOST_GID} /app
 
 ENV PYTHONPATH=/app
 ENV PREFECT_HOME=/app/.prefect

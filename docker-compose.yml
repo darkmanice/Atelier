@@ -44,8 +44,14 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     image: atelier-worker:latest
     container_name: atelier-prefect-worker
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be set in .env}"
     restart: unless-stopped
     depends_on:
       prefect-server:
@@ -64,7 +70,7 @@ services:
       # in services.py works (used by e2e_setup/teardown and preview_up).
       - ${WORKTREES_HOST_DIR:-${PWD}/worktrees}:${WORKTREES_HOST_DIR:-${PWD}/worktrees}
       - ./logs:/app/logs
-      - ${REPOS_HOST_DIR:?REPOS_HOST_DIR must be set in .env}:/repos
+      - ./projects:/projects
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
@@ -74,9 +80,14 @@ services:
       - WORKTREES_DIR=/app/worktrees
       - LOGS_DIR=/app/logs
       - WORKTREES_HOST_DIR=${WORKTREES_HOST_DIR:-${PWD}/worktrees}
-      - REPOS_HOST_DIR=${REPOS_HOST_DIR}
+      # Host-side path that backs /projects. Auto-derived from compose's PWD
+      # so the worker can hand the correct absolute path to `docker run` when
+      # it spawns per-project mounts for agent/runner containers.
+      - PROJECTS_HOST_DIR=${PWD}/projects
       - AGENT_IMAGE=atelier-agent:latest
       - AGENT_NETWORK=atelier_network
+      - AGENT_UID=${HOST_UID:-1000}
+      - AGENT_GID=${HOST_GID:-1000}
       - AGENT_MEM_LIMIT=${AGENT_MEM_LIMIT:-4g}
       - AGENT_CPU_LIMIT=${AGENT_CPU_LIMIT:-2.0}
       - AGENT_TIMEOUT_SEC=${AGENT_TIMEOUT_SEC:-2400}
@@ -103,8 +114,12 @@ services:
     build:
       context: .
       dockerfile: docker/orchestrator.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     image: atelier-orchestrator:latest
     container_name: atelier-orchestrator
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     restart: unless-stopped
     depends_on:
       prefect-server:
@@ -114,7 +129,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ${REPOS_HOST_DIR:?REPOS_HOST_DIR must be set in .env}:/repos
+      - ./projects:/projects
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
@@ -122,6 +137,8 @@ services:
       - LOGS_DIR=/app/logs
       - DATA_DIR=/app/data
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set in .env}
+      # Same host-side path as the worker — shared config module reads it.
+      - PROJECTS_HOST_DIR=${PWD}/projects
       # Master key used to encrypt stored API keys in /app/data/providers.json.
       # Empty = "stored providers" feature disabled (one-shot flow still works).
       - MASTER_ENCRYPTION_KEY=${MASTER_ENCRYPTION_KEY:-}
@@ -135,6 +152,9 @@ services:
     build:
       context: .
       dockerfile: docker/agent.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     image: atelier-agent:latest
     container_name: atelier-agent-builder
     entrypoint: ["true"]
@@ -147,6 +167,9 @@ services:
     build:
       context: .
       dockerfile: docker/runner-quick.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     image: atelier-runner-quick:latest
     container_name: atelier-runner-quick-builder
     entrypoint: ["true"]
@@ -160,6 +183,9 @@ services:
     build:
       context: .
       dockerfile: docker/runner-e2e.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     image: atelier-runner-e2e:latest
     container_name: atelier-runner-e2e-builder
     entrypoint: ["true"]

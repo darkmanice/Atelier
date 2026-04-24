@@ -16,7 +16,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 import httpx
 import markdown as md
@@ -32,7 +31,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
-from orchestrator.config import DEFAULT_MODEL
+from orchestrator.config import DEFAULT_MODEL, PROJECTS_ROOT
 from orchestrator.crypto import CryptoError, is_available as crypto_available
 from orchestrator.providers_store import store as providers_store
 from orchestrator.secrets_store import store as secret_store
@@ -47,7 +46,6 @@ app = FastAPI(title="atelier")
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-REPOS_ROOT = Path("/repos")
 DEPLOYMENT_NAME = os.environ.get("DEPLOYMENT_NAME", "atelier/default")
 TEARDOWN_DEPLOYMENT_NAME = os.environ.get(
     "TEARDOWN_DEPLOYMENT_NAME", "teardown-preview/default"
@@ -67,7 +65,7 @@ if not INTERNAL_TOKEN:
 
 class TaskCreate(BaseModel):
     prompt: str = Field(min_length=5)
-    repo_path: str = Field(description="Path relative to /repos or absolute.")
+    repo_path: str = Field(description="Path relative to /projects or absolute.")
     base_branch: str = "main"
     feature_branch: str | None = None
 
@@ -112,10 +110,10 @@ class TaskResponse(BaseModel):
 def _resolve_repo_path(user_input: str) -> Path:
     p = Path(user_input)
     if not p.is_absolute():
-        p = REPOS_ROOT / p
+        p = PROJECTS_ROOT / p
     p = p.resolve()
-    if not str(p).startswith(str(REPOS_ROOT)):
-        raise HTTPException(400, f"repo_path must be under {REPOS_ROOT}")
+    if not str(p).startswith(str(PROJECTS_ROOT)):
+        raise HTTPException(400, f"repo_path must be under {PROJECTS_ROOT}")
     if not (p / ".git").exists():
         raise HTTPException(400, f"{p} is not a git repository")
     return p
@@ -432,8 +430,8 @@ async def ui_branches(repo_path: str = "", selected: str | None = None) -> str:
 
 
 def _list_git_repos() -> list[str]:
-    """Git repos under /repos (recursive, no limit). Paths relative to /repos."""
-    if not REPOS_ROOT.is_dir():
+    """Git repos under /projects (recursive, no limit). Paths relative to /projects."""
+    if not PROJECTS_ROOT.is_dir():
         return []
     found: list[str] = []
 
@@ -446,115 +444,20 @@ def _list_git_repos() -> list[str]:
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
             if (entry / ".git").exists():
-                found.append(str(entry.relative_to(REPOS_ROOT)))
+                found.append(str(entry.relative_to(PROJECTS_ROOT)))
                 # We do not descend inside a found repo.
                 continue
             walk(entry)
 
-    walk(REPOS_ROOT)
+    walk(PROJECTS_ROOT)
     return sorted(found)
 
 
-@app.get("/ui/repos", response_class=HTMLResponse)
+@app.get("/ui/projects", response_class=HTMLResponse)
 async def ui_repos(selected: str | None = None) -> str:
     repos = _list_git_repos()
     default = selected if selected in repos else _pick_default(repos, [])
-    return _options_html(repos, default, empty_label="(no repos in /repos)")
-
-
-# --- Tree file picker ---
-
-def _resolve_fs_path(relative: str | None) -> Path:
-    """Resolve a path under /repos. Less strict than _resolve_repo_path:
-    does not require `.git`, only that it exists as a directory."""
-    rel = (relative or "").strip().lstrip("/")
-    target = (REPOS_ROOT / rel).resolve() if rel else REPOS_ROOT.resolve()
-    if not str(target).startswith(str(REPOS_ROOT)):
-        raise HTTPException(400, "path must be under /repos")
-    if not target.is_dir():
-        raise HTTPException(404, "directory not found")
-    return target
-
-
-def _tree_crumb(label: str, path: str) -> str:
-    return (
-        f'<button type="button" class="tree-crumb" '
-        f'hx-get="/ui/fs?path={quote(path)}" '
-        f'hx-target="#repo-tree-body" hx-swap="innerHTML">'
-        f'{html.escape(label)}</button>'
-    )
-
-
-def _render_fs_fragment(current: Path) -> str:
-    rel = current.relative_to(REPOS_ROOT)
-    rel_str = "" if str(rel) == "." else str(rel).replace("\\", "/")
-    is_repo_here = (current / ".git").exists()
-
-    crumbs = [_tree_crumb("~", "")]
-    acc = ""
-    for part in (() if not rel_str else rel_str.split("/")):
-        acc = f"{acc}/{part}" if acc else part
-        crumbs.append('<span class="tree-sep">/</span>')
-        crumbs.append(_tree_crumb(part, acc))
-
-    try:
-        entries = sorted(
-            (e for e in current.iterdir() if e.is_dir() and not e.name.startswith(".")),
-            key=lambda e: e.name.lower(),
-        )
-    except OSError:
-        entries = []
-
-    rows: list[str] = []
-    for entry in entries:
-        entry_rel = str(entry.relative_to(REPOS_ROOT)).replace("\\", "/")
-        entry_is_repo = (entry / ".git").exists()
-        safe_name = html.escape(entry.name)
-        url_path = quote(entry_rel)
-        if entry_is_repo:
-            rows.append(
-                f'<div class="tree-row is-repo">'
-                f'<button type="button" class="tree-link" '
-                f'hx-get="/ui/fs?path={url_path}" hx-target="#repo-tree-body" hx-swap="innerHTML">'
-                f'<span class="tree-icon">◈</span>'
-                f'<span class="tree-name">{safe_name}</span>'
-                f'<span class="tree-tag">repo</span>'
-                f'</button>'
-                f'<button type="button" class="tree-pick" '
-                f'data-path="{html.escape(entry_rel)}">Select</button>'
-                f'</div>'
-            )
-        else:
-            rows.append(
-                f'<div class="tree-row">'
-                f'<button type="button" class="tree-link" '
-                f'hx-get="/ui/fs?path={url_path}" hx-target="#repo-tree-body" hx-swap="innerHTML">'
-                f'<span class="tree-icon">▸</span>'
-                f'<span class="tree-name">{safe_name}</span>'
-                f'</button>'
-                f'</div>'
-            )
-
-    if not rows:
-        rows = ['<div class="tree-empty">Empty or inaccessible directory</div>']
-
-    header_parts = [f'<nav class="tree-breadcrumb">{"".join(crumbs)}</nav>']
-    if is_repo_here and rel_str:
-        header_parts.append(
-            f'<button type="button" class="tree-pick-current" '
-            f'data-path="{html.escape(rel_str)}">✓ Use this directory</button>'
-        )
-
-    return (
-        f'<div class="tree-header">{"".join(header_parts)}</div>'
-        f'<div class="tree-list">{"".join(rows)}</div>'
-    )
-
-
-@app.get("/ui/fs", response_class=HTMLResponse)
-async def ui_fs(path: str = "") -> str:
-    target = _resolve_fs_path(path)
-    return _render_fs_fragment(target)
+    return _options_html(repos, default, empty_label="(no repos in /projects)")
 
 
 class ModelsProbeRequest(BaseModel):

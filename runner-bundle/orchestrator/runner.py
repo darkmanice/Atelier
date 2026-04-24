@@ -25,7 +25,7 @@ from orchestrator.config import (
     AGENT_CPU_LIMIT,
     AGENT_MEM_LIMIT,
     AGENT_NETWORK,
-    REPOS_DIR_HOST,
+    PROJECTS_DIR_HOST,
 )
 
 log = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ def run_command_in_runner(
 
     volumes: dict = {
         str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
-        str(REPOS_DIR_HOST): {"bind": "/repos", "mode": "rw"},
+        str(PROJECTS_DIR_HOST): {"bind": "/projects", "mode": "rw"},
     }
     if mount_docker_socket:
         volumes["/var/run/docker.sock"] = {

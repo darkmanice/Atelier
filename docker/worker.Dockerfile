@@ -6,6 +6,9 @@
 #   - git (to create worktrees)
 FROM prefecthq/prefect:3-latest
 
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
 USER root
 
 # Install docker-cli and git
@@ -34,8 +37,9 @@ COPY agents/models.py /app/agents/models.py
 COPY agents/__init__.py /app/agents/__init__.py
 COPY prefect.yaml /app/prefect.yaml
 
-# Create runtime directories and hand them to UID 1000 (the runtime user)
-RUN mkdir -p /app/worktrees /app/logs /app/data && chown -R 1000:1000 /app
+# Create runtime directories and hand them to the host user's UID/GID so
+# the worker (running as that user at runtime) can write to them.
+RUN mkdir -p /app/worktrees /app/logs /app/data && chown -R ${HOST_UID}:${HOST_GID} /app
 
 RUN git config --system user.email "worker@atelier.local" && \
     git config --system user.name "atelier worker" && \

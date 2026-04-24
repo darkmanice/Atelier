@@ -35,23 +35,16 @@
       </div>
     </div>
 
-    <div class="field field-repo">
-      <label class="field-label">
+    <div class="field">
+      <label class="field-label" for="repo_path">
         Project
         <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
-              data-tooltip="Only git-initialized directories can be selected.">ⓘ</span>
+              data-tooltip="Git-initialized projects under ./projects/.">ⓘ</span>
       </label>
-      <div class="tree-picker">
-        <div id="repo-tree-body"
-             hx-get="/ui/fs?path=" hx-trigger="load" hx-swap="innerHTML">
-          <div class="tree-loading">Loading…</div>
-        </div>
-        <div class="tree-footer">
-          <span class="tree-footer-label">Selected</span>
-          <span class="tree-footer-value empty" id="repo-selected-display">none</span>
-        </div>
-      </div>
-      <input type="hidden" id="repo_path" name="repo_path" required>
+      <select id="repo_path" name="repo_path" required class="field-input"
+              hx-get="/ui/projects" hx-trigger="load" hx-swap="innerHTML">
+        <option value="" disabled selected>Loading…</option>
+      </select>
     </div>
 
     <div class="field-grid field-grid-2">
@@ -198,6 +191,12 @@
           branchInput.disabled = !repoInput.value;
         };
         repoInput.addEventListener('change', syncBranchEnabled);
+        // htmx populates <select id="repo_path"> via swap and does NOT fire
+        // a native `change`, so we re-dispatch it to wake up the branch
+        // fetch + combobox enable.
+        repoInput.addEventListener('htmx:afterSwap', () => {
+          repoInput.dispatchEvent(new Event('change', { bubbles: true }));
+        });
         syncBranchEnabled();
       }
 

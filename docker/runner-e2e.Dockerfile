@@ -1,6 +1,11 @@
 # Runner for E2E tests with Playwright (browsers pre-installed).
-# The base image already ships a 'pwuser' user with UID 1000.
+# The base image already ships a 'pwuser' user with UID 1000; we replace it
+# with a runner user tied to the host UID/GID so bind-mounted worktrees stay
+# writable for the host user.
 FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+
+ARG HOST_UID=1000
+ARG HOST_GID=1000
 
 # Python (the base image ships only Node)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,11 +25,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
     playwright==1.48.0 \
     requests==2.32.3
 
-# Create /workspace and transfer ownership to the existing pwuser (UID 1000)
-RUN mkdir -p /workspace && chown pwuser:pwuser /workspace && \
-    chown -R pwuser:pwuser /opt/venv
+# Create /workspace and a user matching the host UID/GID
+RUN groupadd -o -g ${HOST_GID} runner \
+    && useradd -m -o -u ${HOST_UID} -g ${HOST_GID} runner \
+    && mkdir -p /workspace \
+    && chown ${HOST_UID}:${HOST_GID} /workspace \
+    && chown -R ${HOST_UID}:${HOST_GID} /opt/venv
 
-USER pwuser
+USER runner
 WORKDIR /workspace
 
 RUN git config --global user.email "runner@atelier.local" && \

@@ -11,7 +11,8 @@ __pycache__/
 # Runtime
 worktrees/
 logs/
-repos/
+projects/*
+!projects/.gitkeep
 data/
 
 # Prefect

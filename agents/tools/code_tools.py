@@ -194,10 +194,29 @@ def write_file(worktree: Path, path: str, content: str) -> str:
     return f"wrote {len(content)} chars to {path}"
 
 
-def git_commit(worktree: Path, message: str) -> str:
+def _current_branch(worktree: Path) -> str | None:
+    """Return the branch name of HEAD, or None if detached/error."""
+    try:
+        return subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=worktree, capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def git_commit(worktree: Path, message: str, feature_branch: str) -> str:
+    # Branch sandbox: the agent is only allowed to commit on its task branch.
+    # If HEAD is elsewhere (detached, or on master/main via checkout), refuse.
+    current = _current_branch(worktree)
+    if current != feature_branch:
+        return (
+            f"ERROR: commits are restricted to branch '{feature_branch}'; "
+            f"HEAD is on '{current or '(detached)'}'."
+        )
     try:
         subprocess.run(["git", "add", "-A"], cwd=worktree, check=True, timeout=30)
-        result = subprocess.run(
+        subprocess.run(
             ["git", "commit", "-m", message, "--allow-empty"],
             cwd=worktree,
             capture_output=True,
@@ -205,7 +224,6 @@ def git_commit(worktree: Path, message: str) -> str:
             timeout=30,
             check=True,
         )
-        # return the short commit hash
         sha = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=worktree,
@@ -219,13 +237,13 @@ def git_commit(worktree: Path, message: str) -> str:
 
 
 # Dispatcher invoked by the ReAct loop
-def dispatch(name: str, arguments: dict, worktree: Path) -> str:
+def dispatch(name: str, arguments: dict, worktree: Path, feature_branch: str) -> str:
     handlers = {
         "list_files": lambda: list_files(worktree, arguments.get("subpath", "")),
         "read_file": lambda: read_file(worktree, arguments["path"]),
         "get_diff": lambda: get_diff(worktree, arguments["base_branch"]),
         "write_file": lambda: write_file(worktree, arguments["path"], arguments["content"]),
-        "git_commit": lambda: git_commit(worktree, arguments["message"]),
+        "git_commit": lambda: git_commit(worktree, arguments["message"], feature_branch),
     }
     handler = handlers.get(name)
     if handler is None:

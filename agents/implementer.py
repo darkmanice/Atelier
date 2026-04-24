@@ -131,43 +131,68 @@ def run(task: TaskInput) -> AgentResult:
         captured = stdout
     log.append(LogEntry(role=task.role, kind="llm_message", content=captured))
 
-    # Final commit with everything Aider has left in the working tree
-    commit_msg = f"Implementation: {task.prompt[:72]}"
+    # Branch sandbox: if Aider (or anything else) left HEAD on a branch other
+    # than the task branch, refuse to commit. The ref snapshot on the worker
+    # side is still the main guardrail; this is the fast-fail on our side.
+    commits: list[str] = []
     try:
-        subprocess.run(
-            ["git", "add", "-A"],
+        current_branch = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
             cwd=task.worktree_path,
             capture_output=True,
             text=True,
             check=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", commit_msg, "--allow-empty"],
-            cwd=task.worktree_path,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-        sha_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=task.worktree_path,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        sha = sha_result.stdout.strip()
-        commits = [sha]
-        log.append(LogEntry(role=task.role, kind="info", content=f"Committed as {sha}"))
-    except subprocess.CalledProcessError as e:
-        commits = []
-        err = (e.stderr or "").strip() or (e.stdout or "").strip() or "no output"
+            timeout=10,
+        ).stdout.strip()
+    except subprocess.CalledProcessError:
+        current_branch = ""
+
+    if current_branch != task.feature_branch:
         log.append(LogEntry(
             role=task.role,
             kind="error",
-            content=f"Commit failed ({' '.join(e.cmd)}): {err}",
+            content=(
+                f"Refusing to commit: HEAD is on '{current_branch or '(detached)'}', "
+                f"task branch is '{task.feature_branch}'."
+            ),
         ))
+    else:
+        # Final commit with everything Aider has left in the working tree
+        commit_msg = f"Implementation: {task.prompt[:72]}"
+        try:
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=task.worktree_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg, "--allow-empty"],
+                cwd=task.worktree_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            sha_result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=task.worktree_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            sha = sha_result.stdout.strip()
+            commits = [sha]
+            log.append(LogEntry(role=task.role, kind="info", content=f"Committed as {sha}"))
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or "").strip() or (e.stdout or "").strip() or "no output"
+            log.append(LogEntry(
+                role=task.role,
+                kind="error",
+                content=f"Commit failed ({' '.join(e.cmd)}): {err}",
+            ))
 
     return AgentResult(
         success=returncode == 0,
