@@ -15,9 +15,11 @@ and --no-pretty for non-interactive execution.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from agents.models import AgentResult, LogEntry, TaskInput
 
@@ -37,10 +39,21 @@ def run(task: TaskInput) -> AgentResult:
     ]
 
     # Build the prompt. If we come from a previous iteration with feedback,
-    # include it at the beginning.
-    prompt_parts = [task.prompt]
+    # include it at the beginning. A short preamble nudges the model to
+    # actually WRITE files (not just discuss them) and to emit SEARCH/REPLACE
+    # blocks with explicit filenames, which is what Aider's diff edit-format
+    # expects.
+    preamble = (
+        "You are the implementer. Make the requested changes by creating or "
+        "modifying files in the current directory — do not just describe the "
+        "change. If the task does not name a specific file, pick a sensible "
+        "filename and create it. Emit Aider SEARCH/REPLACE blocks with the "
+        "filename on its own line above each block so the edit is applied.\n\n"
+        "[Task]\n"
+    )
+    prompt_parts = [preamble + task.prompt]
     if task.previous_feedback:
-        prompt_parts.insert(0, f"[Feedback from previous review]\n{task.previous_feedback}\n\n[Task]")
+        prompt_parts.insert(0, f"[Feedback from previous review]\n{task.previous_feedback}\n")
     full_prompt = "\n".join(prompt_parts)
 
     # Model via LiteLLM (used by Aider): the `openai/` prefix makes LiteLLM
@@ -63,6 +76,18 @@ def run(task: TaskInput) -> AgentResult:
         "--no-show-release-notes",
         "--edit-format", "diff",
         "--map-tokens", "2048",
+        # Suppress Aider's chat-history summarizer. With `--message` (one-shot)
+        # Aider exits right after the edit and its background summarizer
+        # thread pool is shut down before it can finish, which spams
+        # "cannot schedule new futures after shutdown" into stdout. Setting
+        # the history cap absurdly high means the summarizer never triggers.
+        "--max-chat-history-tokens", "999999999",
+        # Redirect Aider's history files out of the worktree so they do not
+        # end up in the commit. The tags cache (.aider.tags.cache.v4/) has
+        # no flag to relocate; we wipe it below before the commit.
+        "--chat-history-file", "/tmp/aider-chat.md",
+        "--input-history-file", "/tmp/aider-input.history",
+        "--llm-history-file", "/tmp/aider-llm.history",
         "--message", full_prompt,
     ]
     # Pass Aider the same endpoint and key that are already in our environment
@@ -130,6 +155,11 @@ def run(task: TaskInput) -> AgentResult:
     else:
         captured = stdout
     log.append(LogEntry(role=task.role, kind="llm_message", content=captured))
+
+    # Sweep any Aider artefacts (tags cache dir, stray history files the
+    # flags above did not catch, etc.) so `git add -A` below never picks
+    # them up. The user does not want these in their feature-branch commits.
+    _purge_aider_artifacts(Path(task.worktree_path), log, task.role)
 
     # Branch sandbox: if Aider (or anything else) left HEAD on a branch other
     # than the task branch, refuse to commit. The ref snapshot on the worker
@@ -203,21 +233,78 @@ def run(task: TaskInput) -> AgentResult:
     )
 
 
+def _purge_aider_artifacts(worktree: Path, log: list[LogEntry], role) -> None:
+    """Remove any .aider* file or directory left in the worktree.
+
+    Aider drops several files into the project root (chat history, input
+    history, tags cache). We redirect most via CLI flags but the tags cache
+    has no equivalent flag, and older/new Aider versions may add more. Wipe
+    anything matching `.aider*` before the implementer commits so no Aider
+    bookkeeping leaks into the task branch.
+    """
+    removed: list[str] = []
+    for entry in worktree.glob(".aider*"):
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            removed.append(entry.name)
+        except OSError:
+            pass
+    if removed:
+        log.append(LogEntry(
+            role=role, kind="info",
+            content=f"Cleaned up Aider artifacts: {', '.join(removed)}",
+        ))
+
+
+_AIDER_NOISE_PREFIXES = (
+    "<<<<<<< ", ">>>>>>> ", "======",   # REPLACE block markers
+)
+_AIDER_KEEP_KEYWORDS = (
+    "applied edit",
+    "commit ",
+    "tokens:",
+    "summarization failed",
+    "summarizer unexpectedly",
+    "aider ok",
+    "aider error",
+    "no changes",
+    "exit code",
+)
+
+
 def _summarize_aider(stdout: str, returncode: int) -> str:
     """
     Extract a short explanation of what Aider did from its stdout.
 
-    Aider ends with lines like:
-        Applied edit to path/to/file.py
-        Commit abc1234 feat: ...
-    We take the last non-empty lines as a readable summary, instead of just
-    "exit code X" which tells the user nothing.
+    Aider echoes the full REPLACE blocks, chat prose, and status lines into
+    stdout. For the task summary we only want the status-ish lines
+    ("Applied edit to ...", "Commit abc1234 ...", "Tokens: ...", etc.).
+    Code dumps between ``` fences and REPLACE conflict markers are filtered
+    out so the summary stays short and readable.
     """
-    meaningful = [line for line in stdout.splitlines() if line.strip()]
-    if not meaningful:
-        return f"Aider finished with exit code {returncode} (no output)"
+    kept: list[str] = []
+    in_fence = False
+    for raw in stdout.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped.startswith(_AIDER_NOISE_PREFIXES):
+            continue
+        # Keep only lines that look like status output; skip prose/code leaks.
+        low = stripped.lower()
+        if any(kw in low for kw in _AIDER_KEEP_KEYWORDS):
+            kept.append(stripped)
 
-    tail = meaningful[-8:]
-    tail_text = "\n".join(tail).strip()
     status = "ok" if returncode == 0 else f"exit {returncode}"
-    return f"Aider {status}:\n{tail_text}"
+    if not kept:
+        return f"Aider {status} (no status lines captured)"
+    return f"Aider {status}: " + " · ".join(kept[-6:])

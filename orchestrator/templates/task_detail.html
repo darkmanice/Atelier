@@ -37,8 +37,7 @@
   <div class="preview-card">
     <span class="label">● Preview active</span>
     <div>
-      <a href="{{ preview.url }}" target="_blank" rel="noopener" class="url">{{ preview.url }}</a>
-      <span class="port">port <code>{{ preview.port }}</code></span>
+      <a href="{{ preview.url }}" target="_blank" rel="noopener noreferrer" class="url">{{ preview.url }}</a>
     </div>
     <form method="post" action="/ui/tasks/{{ task.id }}/preview/teardown" style="margin: 0;">
       <button type="submit" class="btn small ghost">Tear down preview</button>

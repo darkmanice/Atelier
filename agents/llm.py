@@ -39,7 +39,17 @@ class LLMClient:
             raise RuntimeError(
                 "LLMClient: missing base_url (set OPENAI_API_BASE or pass base_url=)"
             )
-        self.client = OpenAI(base_url=resolved_base, api_key=resolved_key)
+        # Explicit timeout and zero SDK-level retries: some providers stall
+        # indefinitely on an otherwise-open socket. Without a read timeout
+        # the agent hangs until AGENT_TIMEOUT_SEC on the worker kicks in
+        # (40 min by default), which is way too slow. Retries are handled
+        # by `chat()` below; we do not want the SDK to shadow them.
+        self.client = OpenAI(
+            base_url=resolved_base,
+            api_key=resolved_key,
+            timeout=120.0,
+            max_retries=0,
+        )
         self.model = model
 
     def chat(
