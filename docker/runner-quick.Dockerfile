@@ -5,6 +5,9 @@
 
 FROM python:3.12-slim
 
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -29,7 +32,10 @@ RUN pip install --no-cache-dir \
 # pnpm and yarn in case JS projects use them
 RUN npm install -g pnpm yarn
 
-RUN useradd -m -u 1000 runner && mkdir -p /workspace && chown runner:runner /workspace
+RUN groupadd -o -g ${HOST_GID} runner \
+    && useradd -m -o -u ${HOST_UID} -g ${HOST_GID} runner \
+    && mkdir -p /workspace \
+    && chown ${HOST_UID}:${HOST_GID} /workspace
 
 USER runner
 WORKDIR /workspace

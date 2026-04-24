@@ -25,7 +25,7 @@ from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 @dataclass
 class LLMResponse:
     content: str
-    tool_calls: list[dict[str, Any]]   # [{"name": ..., "arguments": {...}}, ...]
+    tool_calls: list[dict[str, Any]]   # [{"id": ..., "name": ..., "arguments": {...}}, ...]
     raw: dict                           # raw response in case debugging is needed
 
 
@@ -84,7 +84,14 @@ class LLMClient:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {"_raw": tc.function.arguments}
-            tool_calls.append({"name": tc.function.name, "arguments": args})
+            # Preserve the id so we can echo it back in the assistant turn
+            # and reference it from the tool-response messages (required by
+            # the strict OpenAI Chat Completions schema).
+            tool_calls.append({
+                "id": tc.id,
+                "name": tc.function.name,
+                "arguments": args,
+            })
 
         return LLMResponse(
             content=msg.content or "",

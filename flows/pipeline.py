@@ -67,6 +67,12 @@ def task_create_worktree(
     return {
         "container_path": str(handle.container_path),
         "host_path": str(handle.host_path),
+        # Repo path as the worker sees it (e.g. /projects/foo). Carried in
+        # the dict so runner/agent containers can mount ONLY this project.
+        "repo_container_path": str(repo_path),
+        # Branch the task is allowed to modify. Used by the ref sandbox to
+        # reject destructive operations on any other ref.
+        "feature_branch": feature_branch,
     }
 
 
@@ -102,6 +108,7 @@ def _run_agent_task(
         task_input,
         Path(worktree["host_path"]),
         Path(worktree["container_path"]),
+        Path(worktree["repo_container_path"]),
         api_key=api_key,
     )
     tasklog.append_agent_result(task_id, role.value, result, model=model)
@@ -161,6 +168,8 @@ def task_install(worktree: dict, config_dict: dict | None) -> dict:
         image=RUNNER_QUICK_IMAGE,
         command=cfg["command"],
         host_worktree_path=Path(worktree["host_path"]),
+        container_repo_path=Path(worktree["repo_container_path"]),
+        feature_branch=worktree["feature_branch"],
         timeout_sec=cfg["timeout"],
     )
     if not result.success:
@@ -202,6 +211,8 @@ def task_quick_tests(worktree: dict, config_dict: dict | None) -> dict:
         image=RUNNER_QUICK_IMAGE,
         command=cfg["command"],
         host_worktree_path=Path(worktree["host_path"]),
+        container_repo_path=Path(worktree["repo_container_path"]),
+        feature_branch=worktree["feature_branch"],
         timeout_sec=cfg["timeout"],
     )
     return _finalize_test_result(result, "Quick tests", logger)
@@ -220,6 +231,8 @@ def task_full_tests(worktree: dict, config_dict: dict | None) -> dict:
         image=RUNNER_QUICK_IMAGE,
         command=cfg["command"],
         host_worktree_path=Path(worktree["host_path"]),
+        container_repo_path=Path(worktree["repo_container_path"]),
+        feature_branch=worktree["feature_branch"],
         timeout_sec=cfg["timeout"],
     )
     return _finalize_test_result(result, "Full tests", logger)
@@ -257,6 +270,8 @@ def task_e2e_tests(worktree: dict, config_dict: dict | None) -> dict:
         image=RUNNER_E2E_IMAGE,
         command=cfg["command"],
         host_worktree_path=Path(worktree["host_path"]),
+        container_repo_path=Path(worktree["repo_container_path"]),
+        feature_branch=worktree["feature_branch"],
         timeout_sec=cfg["timeout"],
     )
     return _finalize_test_result(result, "E2E tests", logger)

@@ -1,19 +1,25 @@
 # Single image shared by the three agent roles (implementer, reviewer, simplifier).
 FROM python:3.12-slim
 
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 agent
+# `-o` allows duplicate (non-unique) UID/GID — needed when HOST_UID collides
+# with an existing system user in the base image.
+RUN groupadd -o -g ${HOST_GID} agent \
+    && useradd -m -o -u ${HOST_UID} -g ${HOST_GID} agent
 WORKDIR /app
 
 COPY docker/agent-requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agents/ /app/agents/
-RUN chown -R agent:agent /app
+RUN chown -R ${HOST_UID}:${HOST_GID} /app
 
 USER agent
 

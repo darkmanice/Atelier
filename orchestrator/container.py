@@ -11,6 +11,7 @@ from pathlib import Path
 import docker
 from docker.errors import ImageNotFound
 
+from orchestrator.branch_guard import diff_refs, snapshot_refs
 from orchestrator.config import (
     AGENT_CPU_LIMIT,
     AGENT_GID,
@@ -19,7 +20,7 @@ from orchestrator.config import (
     AGENT_NETWORK,
     AGENT_TIMEOUT_SEC,
     AGENT_UID,
-    REPOS_DIR_HOST,
+    host_path_for_project,
 )
 
 from agents.models import AgentResult, TaskInput
@@ -37,6 +38,7 @@ def run_agent(
     task_input: TaskInput,
     host_worktree_path: Path,
     container_worktree_path: Path,
+    container_repo_path: Path,
     api_key: str = "",
 ) -> AgentResult:
     try:
@@ -63,12 +65,22 @@ def run_agent(
         task_input.role, task_input.task_id,
     )
 
+    # Sandbox: mount ONLY the specific project at the same path the worker sees
+    # it (needed because the worktree's .git gitdir pointer references that path
+    # absolutely). The agent has no visibility of sibling projects.
+    host_project_path = host_path_for_project(container_repo_path)
+
+    # Branch sandbox: capture every ref of the project. Anything outside
+    # refs/heads/<feature_branch> that changes during the run is a violation.
+    pre_refs = snapshot_refs(container_repo_path)
+
     # LLM config to the agent via standard OpenAI SDK + LiteLLM env vars.
     # The key only lives in the container process during its execution
     # (auto_remove=False here, but we remove it in the finally below).
     container = _client.containers.create(
         image=AGENT_IMAGE,
         detach=True,
+        user=f"{AGENT_UID}:{AGENT_GID}",
         environment={
             "AGENT_ROLE": task_input.role.value,
             "TASK_ID": str(task_input.task_id),
@@ -78,7 +90,7 @@ def run_agent(
         },
         volumes={
             str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
-            str(REPOS_DIR_HOST): {"bind": "/repos", "mode": "rw"},
+            str(host_project_path): {"bind": str(container_repo_path), "mode": "rw"},
         },
         working_dir="/workspace",
         mem_limit=AGENT_MEM_LIMIT,
@@ -120,6 +132,26 @@ def run_agent(
                 success=False,
                 verdict="failed",
                 summary=f"Could not parse agent output (exit code {exit_code})",
+                log=[],
+            )
+
+        # Branch sandbox verification. Any ref change outside the feature
+        # branch (delete, move, or create) aborts the task regardless of
+        # whatever the agent "said" it did.
+        violations = diff_refs(
+            pre_refs,
+            snapshot_refs(container_repo_path),
+            task_input.feature_branch,
+        )
+        if violations:
+            log.error(
+                "Ref sandbox violation (role=%s task=%s): %s",
+                task_input.role, task_input.task_id, violations,
+            )
+            return AgentResult(
+                success=False,
+                verdict="failed",
+                summary="Branch sandbox violation: " + "; ".join(violations),
                 log=[],
             )
         return result

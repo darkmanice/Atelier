@@ -9,12 +9,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).parent.parent)).resolve()
 WORKTREES_DIR = Path(os.environ.get("WORKTREES_DIR", PROJECT_ROOT / "worktrees")).resolve()
 LOGS_DIR = Path(os.environ.get("LOGS_DIR", PROJECT_ROOT / "logs")).resolve()
+# Root of the target-repos bind mount inside the worker/orchestrator container.
+PROJECTS_ROOT = Path("/projects")
 
 # --- HOST paths (for bind-mounts in agent containers) ---
 WORKTREES_DIR_HOST = Path(
     os.environ.get("WORKTREES_HOST_DIR", str(WORKTREES_DIR))
 ).resolve()
-REPOS_DIR_HOST = Path(os.environ["REPOS_HOST_DIR"]).resolve()
+PROJECTS_DIR_HOST = Path(os.environ["PROJECTS_HOST_DIR"]).resolve()
+
+
+def host_path_for_project(container_repo_path: Path) -> Path:
+    """Translate a container-side project path (e.g. /projects/foo) into the
+    host-side equivalent (e.g. /home/user/dev/foo)."""
+    rel = Path(container_repo_path).resolve().relative_to(PROJECTS_ROOT)
+    return (PROJECTS_DIR_HOST / rel).resolve()
 
 # --- LLM default ---
 # Informational only: the real model is chosen by the user per task from

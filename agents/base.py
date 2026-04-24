@@ -67,12 +67,21 @@ class BaseAgent:
                 })
                 continue
 
-            # Process each tool call
+            # Echo the assistant turn back in the strict OpenAI schema:
+            # every tool_call needs {id, type, function:{name, arguments}}
+            # and `arguments` must be a JSON-encoded string.
             messages.append({
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [
-                    {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["arguments"], ensure_ascii=False),
+                        },
+                    }
                     for tc in response.tool_calls
                 ],
             })
@@ -92,7 +101,7 @@ class BaseAgent:
                     return self._build_result(args)
 
                 # Remaining tools
-                result = dispatch(name, args, self.worktree)
+                result = dispatch(name, args, self.worktree, self.task.feature_branch)
 
                 # Capture commit hashes if any
                 if name == "git_commit" and result.startswith("committed "):
@@ -107,8 +116,9 @@ class BaseAgent:
 
                 messages.append({
                     "role": "tool",
-                    "content": result,
+                    "tool_call_id": tc["id"],
                     "name": name,
+                    "content": result,
                 })
 
         # Iterations exhausted without `finish`
