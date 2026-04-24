@@ -48,7 +48,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 DEPLOYMENT_NAME = os.environ.get("DEPLOYMENT_NAME", "atelier/default")
 TEARDOWN_DEPLOYMENT_NAME = os.environ.get(
-    "TEARDOWN_DEPLOYMENT_NAME", "teardown-preview/default"
+    "TEARDOWN_DEPLOYMENT_NAME", "teardown-preview/teardown"
 )
 # Shared secret between orchestrator and worker for the /internal/* endpoints.
 # MUST match in both services (docker-compose.yml -> env from .env).

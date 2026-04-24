@@ -15,10 +15,12 @@ def log_path(task_id: int) -> Path:
 def init_log(task_id: int, prompt: str, repo_path: str, feature_branch: str) -> None:
     path = log_path(task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Show only the project's basename; the /projects/ root is implicit.
+    project = Path(repo_path).name or repo_path
     path.write_text(
         f"# Task {task_id}\n\n"
         f"**Created:** {datetime.utcnow().isoformat()}Z\n"
-        f"**Repo:** `{repo_path}`\n"
+        f"**Project:** `{project}`\n"
         f"**Branch:** `{feature_branch}`\n\n"
         f"## Prompt\n\n{prompt}\n\n"
         f"---\n\n",
@@ -84,12 +86,16 @@ def append_agent_result(
     if duration is not None:
         parts.append(f"**Duration:** {duration:.1f}s\n\n")
 
-    parts.append(f"**Summary:** {result.summary}\n\n")
+    parts.append(_format_summary(result.summary))
 
     if result.commits:
         parts.append(f"**Commits:** {', '.join(f'`{c}`' for c in result.commits)}\n\n")
     if result.review_comments:
-        parts.append(f"**Review comments:**\n\n```\n{result.review_comments}\n```\n\n")
+        parts.append(
+            "**Review comments:**\n\n"
+            + _safe_fenced_block(result.review_comments)
+            + "\n\n"
+        )
 
     tool_calls = [e for e in result.log if e.kind in ("tool_call", "tool_result")]
     if tool_calls:
@@ -105,7 +111,7 @@ def append_agent_result(
     if errors:
         parts.append("**Errors:**\n\n")
         for e in errors:
-            parts.append(f"```\n{e.content}\n```\n\n")
+            parts.append(_safe_fenced_block(e.content) + "\n\n")
 
     parts.append("---\n\n")
     _append(task_id, "".join(parts))
@@ -142,3 +148,41 @@ def _append(task_id: int, text: str) -> None:
 
 def _now() -> str:
     return datetime.utcnow().strftime("%H:%M:%S")
+
+
+def _safe_fenced_block(text: str) -> str:
+    """Wrap arbitrary text in a fenced code block, handling embedded fences.
+
+    Markdown closes a ``` fence on the next ``` it sees. If the text itself
+    contains triple backticks (very common with Aider output, which echoes
+    REPLACE blocks), the block bleeds into the rest of the document. Use
+    enough backticks on the outside to dominate whatever is inside.
+    """
+    text = (text or "").rstrip()
+    # Pick a fence of 3+ backticks longer than the longest run inside.
+    longest_run = 0
+    run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            longest_run = max(longest_run, run)
+        else:
+            run = 0
+    fence = "`" * max(3, longest_run + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
+def _format_summary(summary: str) -> str:
+    """Render a summary value for the task markdown.
+
+    Single-line summaries go inline next to the **Summary:** label. Multi-line
+    or fence-heavy summaries drop into a standalone fenced block below, with
+    enough backticks to dominate any fences inside (Aider REPLACE dumps
+    commonly carry embedded ```).
+    """
+    summary = (summary or "").strip()
+    if not summary:
+        return "**Summary:** _(empty)_\n\n"
+    if "\n" not in summary and "```" not in summary:
+        return f"**Summary:** {summary}\n\n"
+    return "**Summary:**\n\n" + _safe_fenced_block(summary) + "\n\n"

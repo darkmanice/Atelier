@@ -16,7 +16,7 @@ deployments:
     # Honors MAX_CONCURRENT_TASKS from your .env.
     concurrency_limit: 2
     description: "Pipeline Implementer → Reviewer → Simplifier"
-  - name: default
+  - name: teardown
     entrypoint: flows/pipeline.py:teardown_preview_flow
     work_pool:
       name: atelier-pool
