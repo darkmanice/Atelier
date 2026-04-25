@@ -21,7 +21,6 @@ from string import Template
 from typing import Optional
 
 from prefect import flow, get_run_logger, task
-from prefect.tasks import exponential_backoff
 
 from agents.models import AgentResult, AgentRole, TaskInput
 from orchestrator import logger as tasklog
@@ -115,18 +114,17 @@ def _run_agent_task(
     return result.model_dump()
 
 
-@task(name="implementer", retries=1,
-      retry_delay_seconds=exponential_backoff(backoff_factor=10))
+@task(name="implementer")
 def task_implementer(**kwargs) -> dict:
     return _run_agent_task(AgentRole.IMPLEMENTER, **kwargs)
 
 
-@task(name="reviewer", retries=1)
+@task(name="reviewer")
 def task_reviewer(**kwargs) -> dict:
     return _run_agent_task(AgentRole.REVIEWER, **kwargs)
 
 
-@task(name="simplifier", retries=1)
+@task(name="simplifier")
 def task_simplifier(**kwargs) -> dict:
     return _run_agent_task(AgentRole.SIMPLIFIER, **kwargs)
 
@@ -410,11 +408,12 @@ def pipeline_flow(
     total_commits: list[str] = []
 
     for attempt in range(MAX_RETRY_ATTEMPTS + 1):
-        logger.info(f"=== Attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS + 1} ===")
-        tasklog.append_orchestrator(task_id, f"Attempt {attempt + 1}")
+        n = attempt + 1
+        logger.info(f"=== Attempt {n}/{MAX_RETRY_ATTEMPTS + 1} ===")
+        tasklog.append_orchestrator(task_id, f"Attempt {n}")
 
         # Implementer
-        impl = task_implementer(
+        impl = task_implementer.with_options(name=f"implementer-attempt-{n}")(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
             feature_branch=feature_branch, worktree=worktree,
             previous_feedback=feedback, model=model_implementer, **_conn_kwargs,
@@ -426,7 +425,9 @@ def pipeline_flow(
             raise RuntimeError(msg)
 
         # Gate 1: quick tests
-        quick = task_quick_tests(worktree, config_dict)
+        quick = task_quick_tests.with_options(name=f"quick-tests-attempt-{n}")(
+            worktree, config_dict
+        )
         if not quick.get("skipped") and not quick["success"]:
             if attempt < MAX_RETRY_ATTEMPTS:
                 feedback = _fmt_test_feedback("Quick tests", quick)
@@ -438,7 +439,7 @@ def pipeline_flow(
                 raise RuntimeError(msg)
 
         # Reviewer
-        rev = task_reviewer(
+        rev = task_reviewer.with_options(name=f"reviewer-attempt-{n}")(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
             feature_branch=feature_branch, worktree=worktree,
             model=model_reviewer, **_conn_kwargs,
@@ -457,7 +458,7 @@ def pipeline_flow(
                 raise RuntimeError(msg)
 
         # Simplifier
-        simp = task_simplifier(
+        simp = task_simplifier.with_options(name=f"simplifier-attempt-{n}")(
             task_id=task_id, prompt=prompt, base_branch=base_branch,
             feature_branch=feature_branch, worktree=worktree,
             model=model_simplifier, **_conn_kwargs,
@@ -467,7 +468,9 @@ def pipeline_flow(
             logger.warning("Simplifier failed but code is already approved; continuing")
 
         # Gate 2: full tests
-        full = task_full_tests(worktree, config_dict)
+        full = task_full_tests.with_options(name=f"full-tests-attempt-{n}")(
+            worktree, config_dict
+        )
         if not full.get("skipped") and not full["success"]:
             if attempt < MAX_RETRY_ATTEMPTS:
                 feedback = _fmt_test_feedback("Full tests", full)
@@ -480,16 +483,24 @@ def pipeline_flow(
 
         # Gate 3: E2E (with setup + teardown always)
         if config_dict and config_dict.get("e2e_tests"):
-            setup_res = task_e2e_setup(worktree, config_dict)
+            setup_res = task_e2e_setup.with_options(name=f"e2e-setup-attempt-{n}")(
+                worktree, config_dict
+            )
             if not setup_res["success"]:
                 # Still attempt teardown for cleanup
-                task_e2e_teardown(worktree, config_dict)
+                task_e2e_teardown.with_options(name=f"e2e-teardown-attempt-{n}")(
+                    worktree, config_dict
+                )
                 raise RuntimeError(f"E2E setup failed: {setup_res.get('stderr','')[-300:]}")
 
             try:
-                e2e = task_e2e_tests(worktree, config_dict)
+                e2e = task_e2e_tests.with_options(name=f"e2e-tests-attempt-{n}")(
+                    worktree, config_dict
+                )
             finally:
-                task_e2e_teardown(worktree, config_dict)
+                task_e2e_teardown.with_options(name=f"e2e-teardown-attempt-{n}")(
+                    worktree, config_dict
+                )
 
             if not e2e.get("skipped") and not e2e["success"]:
                 if attempt < MAX_RETRY_ATTEMPTS:
