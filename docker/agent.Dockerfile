@@ -35,4 +35,9 @@ ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 ENV AIDER_ANALYTICS=false
 ENV DISABLE_TELEMETRY=1
 
-ENTRYPOINT ["python", "-m", "agents.entrypoint"]
+# Long-lived container model: the worker creates one container per
+# (task_id, role) at flow start, leaves it idle (`sleep infinity`), and
+# invokes the agent once per phase via `docker exec python -m agents.entrypoint`.
+# The flow's `cleanup-containers` task removes everything labeled with
+# `atelier.task=<task_id>` at flow end (try/finally).
+CMD ["sleep", "infinity"]

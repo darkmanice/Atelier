@@ -130,7 +130,10 @@ class ProvidersStore:
         model_reviewer: str = "",
         model_simplifier: str = "",
     ) -> Provider:
-        sealed = crypto_seal(api_key)
+        # Empty `api_key` is allowed (e.g. local Ollama, vLLM without auth).
+        # We store an empty sealed_key dict in that case so `get_decrypted_key`
+        # can short-circuit without needing to call AES-GCM open on nothing.
+        sealed_dict = crypto_seal(api_key).to_dict() if api_key else {}
         entry = _StoredProvider(
             id=str(uuid.uuid4()),
             label=label.strip(),
@@ -138,7 +141,7 @@ class ProvidersStore:
             base_url=base_url.strip(),
             model=model.strip(),
             created_at=datetime.now(timezone.utc).isoformat(),
-            sealed_key=sealed.to_dict(),
+            sealed_key=sealed_dict,
             model_implementer=model_implementer.strip(),
             model_reviewer=model_reviewer.strip(),
             model_simplifier=model_simplifier.strip(),
@@ -210,6 +213,10 @@ class ProvidersStore:
     def get_decrypted_key(self, provider_id: str) -> tuple[Provider, str] | None:
         """
         Returns (public view, cleartext api_key) or None if it does not exist.
+        Empty `sealed_key` (provider stored without a key — e.g. local Ollama)
+        yields `""` as the cleartext api_key. Callers that need the key must
+        check for emptiness before sending it upstream.
+
         This call is the only one that extracts the key from the module; the
         result must not be logged or persisted anywhere other than the one-shot
         secret store.
@@ -217,6 +224,8 @@ class ProvidersStore:
         with self._lock:
             for p in self._load_all():
                 if p.id == provider_id:
+                    if not p.sealed_key:
+                        return p.public(), ""
                     sealed = SealedSecret.from_dict(p.sealed_key)
                     return p.public(), crypto_open(sealed)
         return None

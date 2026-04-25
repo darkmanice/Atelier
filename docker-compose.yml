@@ -91,6 +91,9 @@ services:
       - AGENT_MEM_LIMIT=${AGENT_MEM_LIMIT:-4g}
       - AGENT_CPU_LIMIT=${AGENT_CPU_LIMIT:-2.0}
       - AGENT_TIMEOUT_SEC=${AGENT_TIMEOUT_SEC:-2400}
+      # Aider edit-format. `diff` (default) = SEARCH/REPLACE, `whole` = full
+      # file rewrites (more forgiving with weak models), `udiff` = unified diff.
+      - AIDER_EDIT_FORMAT=${AIDER_EDIT_FORMAT:-diff}
       - RUNNER_QUICK_IMAGE=atelier-runner-quick:latest
       - RUNNER_E2E_IMAGE=atelier-runner-e2e:latest
       # Shared secret for the internal /internal/consume-secret endpoint.

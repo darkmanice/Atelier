@@ -26,7 +26,7 @@ from agents.models import AgentResult, AgentRole, TaskInput
 from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
 from orchestrator.config import DEFAULT_MODEL
-from orchestrator.container import run_agent
+from orchestrator.container import cleanup_task_containers, run_agent
 from orchestrator.llm_config import fetch_api_key
 from orchestrator.runner import (
     RUNNER_E2E_IMAGE,
@@ -393,6 +393,13 @@ def pipeline_flow(
         "api_key": api_key,
     }
 
+    # NOTE: agent containers (labeled `atelier.task=<task_id>`) deliberately
+    # SURVIVE the end of this flow run. They are removed only when the user
+    # calls `DELETE /tasks/{flow_run_id}`, which fires `cleanup-task/cleanup`
+    # on the worker. This lets the user `docker exec -it atelier-agent-...`
+    # against a finished task to inspect state, and reuse the warm runtime
+    # if the same task is retried later.
+
     # 1. Worktree
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
 
@@ -420,9 +427,17 @@ def pipeline_flow(
         )
         total_commits.extend(impl.get("commits", []))
         if not impl["success"]:
-            msg = f"Implementer failed: {impl['summary']}"
-            tasklog.append_final(task_id, "failed", msg, "(no diff)")
-            raise RuntimeError(msg)
+            # Loop back with feedback (e.g. "Aider exited 0 but produced no
+            # file changes…") so the next attempt can correct course. Only
+            # raise if we have exhausted retries.
+            if attempt < MAX_RETRY_ATTEMPTS:
+                feedback = f"Implementer failed: {impl['summary']}"
+                tasklog.append_orchestrator(task_id, f"Implementer failed, looping back: {impl['summary'][:200]}")
+                continue
+            else:
+                msg = f"Implementer failed after max retries: {impl['summary']}"
+                tasklog.append_final(task_id, "failed", msg, "(no diff)")
+                raise RuntimeError(msg)
 
         # Gate 1: quick tests
         quick = task_quick_tests.with_options(name=f"quick-tests-attempt-{n}")(
@@ -536,35 +551,53 @@ def pipeline_flow(
 
 
 # ---------------------------
-# Preview teardown flow
+# Task cleanup flow (DELETE /tasks/{id})
 # ---------------------------
 
-@flow(name="teardown-preview", log_prints=True)
-def teardown_preview_flow(task_id: int) -> dict:
+@flow(name="cleanup-task", log_prints=True)
+def cleanup_task_flow(task_id: int) -> dict:
     """
-    Tears down the preview for a specific task. Triggered by the orchestrator
-    in response to DELETE /tasks/{id}/preview. Runs on the worker because it
-    is the one with the Docker socket and the mounted worktree.
+    Triggered by `DELETE /tasks/{flow_run_id}`. Runs on the worker (which is
+    the one with the Docker socket and the worktree mount) and:
+      1. Tears down the preview if one is active.
+      2. Removes every container labeled `atelier.task=<task_id>` (agent
+         containers from the pipeline run).
+
+    The worktree directory and the markdown task log are intentionally kept;
+    deletion here is about freeing live resources (containers, ports).
     """
     logger = get_run_logger()
-    state = preview_state.load_sidecar(task_id)
-    if state is None:
-        logger.info(f"No preview sidecar for task {task_id}; nothing to teardown")
-        return {"success": True, "task_id": task_id, "already_torn_down": True}
 
-    logger.info(f"Preview down: {state['down']} (task {task_id}, port {state['port']})")
-    res = run_service_command(
-        state["down"],
-        Path(state["host_worktree_path"]),
-        timeout_sec=300,
-        env=state.get("env") or {},
+    # 1. Preview (best-effort).
+    preview_torn_down = False
+    state = preview_state.load_sidecar(task_id)
+    if state is not None:
+        logger.info(f"Tearing down preview for task {task_id} (port {state['port']})")
+        try:
+            res = run_service_command(
+                state["down"],
+                Path(state["host_worktree_path"]),
+                timeout_sec=300,
+                env=state.get("env") or {},
+            )
+            if not res.success:
+                logger.warning(f"Preview down had issues: {(res.stderr or '')[-500:]}")
+            preview_torn_down = res.success
+        except Exception as e:
+            logger.warning(f"Preview teardown raised: {e}")
+        finally:
+            preview_state.delete_sidecar(task_id)
+
+    # 2. Containers.
+    removed = cleanup_task_containers(task_id)
+    logger.info(f"Removed {removed} agent container(s) for task {task_id}")
+
+    tasklog.append_orchestrator(
+        task_id,
+        f"Task deleted (containers removed={removed}, preview torn down={preview_torn_down})",
     )
-    preview_state.delete_sidecar(task_id)
-    if not res.success:
-        logger.warning(f"Preview down had issues: {(res.stderr or '')[-500:]}")
-    tasklog.append_orchestrator(task_id, f"Preview torn down (success={res.success})")
     return {
-        "success": res.success,
         "task_id": task_id,
-        "stderr": (res.stderr or "")[-500:],
+        "containers_removed": removed,
+        "preview_torn_down": preview_torn_down,
     }

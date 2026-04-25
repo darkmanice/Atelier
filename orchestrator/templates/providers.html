@@ -60,13 +60,11 @@
       </div>
       <div class="field">
         <label class="field-label" for="api_key">
-          API key
+          API key <span class="role-overrides-hint">(optional)</span>
           <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
-                data-tooltip="{% if editing %}Leave empty to keep the existing key.{% else %}Encrypted with AES-GCM using MASTER_ENCRYPTION_KEY before being written to disk.{% endif %}">ⓘ</span>
+                data-tooltip="{% if editing %}Leave empty to keep the existing key.{% else %}Optional: leave empty for endpoints without auth (e.g. local Ollama).{% endif %}">ⓘ</span>
         </label>
         <input type="password" id="api_key" name="api_key"
-               {% if not editing %}required{% endif %}
-               placeholder="{% if editing %}(leave empty to keep the current one){% else %}nvapi-… · sk-… · or empty if no auth is required{% endif %}"
                autocomplete="off" spellcheck="false">
       </div>
     </div>

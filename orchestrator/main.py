@@ -47,8 +47,8 @@ app = FastAPI(title="atelier")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 DEPLOYMENT_NAME = os.environ.get("DEPLOYMENT_NAME", "atelier/default")
-TEARDOWN_DEPLOYMENT_NAME = os.environ.get(
-    "TEARDOWN_DEPLOYMENT_NAME", "teardown-preview/teardown"
+CLEANUP_DEPLOYMENT_NAME = os.environ.get(
+    "CLEANUP_DEPLOYMENT_NAME", "cleanup-task/cleanup"
 )
 # Shared secret between orchestrator and worker for the /internal/* endpoints.
 # MUST match in both services (docker-compose.yml -> env from .env).
@@ -93,7 +93,9 @@ class ProviderCreate(BaseModel):
     provider_label: str = "custom"
     base_url: str
     model: str
-    api_key: SecretStr
+    # Optional. Endpoints that don't authenticate (local Ollama, vLLM without
+    # auth, …) can leave this empty. The pipeline falls back to "sk-no-auth".
+    api_key: SecretStr | None = None
     # Per-role overrides. Empty = uses `model`.
     model_implementer: str = ""
     model_reviewer: str = ""
@@ -548,7 +550,7 @@ async def create_provider(payload: ProviderCreate) -> dict:
             provider_label=payload.provider_label,
             base_url=payload.base_url,
             model=payload.model,
-            api_key=payload.api_key.get_secret_value(),
+            api_key=payload.api_key.get_secret_value() if payload.api_key else "",
             model_implementer=payload.model_implementer,
             model_reviewer=payload.model_reviewer,
             model_simplifier=payload.model_simplifier,
@@ -597,25 +599,57 @@ async def get_preview(flow_run_id: str) -> dict:
     }
 
 
-@app.delete("/tasks/{flow_run_id}/preview")
-async def delete_preview(flow_run_id: str) -> dict:
-    """Fires the teardown on the worker (which has docker.sock + worktrees).
-    Blocking: waits until it finishes."""
-    task_id = await _task_id_from_flow_run(flow_run_id)
-    state = preview_state.load_sidecar(task_id)
-    if state is None:
-        raise HTTPException(404, "No active preview for this task")
+@app.delete("/tasks/{flow_run_id}")
+async def delete_task(flow_run_id: str) -> dict:
+    """
+    Delete a task: cancel the flow run if it is still running, then fire
+    `cleanup-task/cleanup` on the worker to remove every long-lived agent
+    container labeled `atelier.task=<task_id>` and tear down the preview.
 
-    teardown_run = await run_deployment(
-        name=TEARDOWN_DEPLOYMENT_NAME,
+    The worktree directory and the markdown task log are intentionally kept.
+    Idempotent: calling twice on the same task is harmless.
+    """
+    try:
+        run_uuid = uuid.UUID(flow_run_id)
+    except ValueError:
+        raise HTTPException(400, "flow_run_id must be a UUID")
+
+    async with get_client() as client:
+        try:
+            run = await client.read_flow_run(run_uuid)
+        except Exception:
+            raise HTTPException(404, "Flow run not found")
+
+        raw_task_id = (run.parameters or {}).get("task_id")
+        if raw_task_id is None:
+            raise HTTPException(404, "task_id not present in flow run parameters")
+        task_id = int(raw_task_id)
+
+        # Cancel only if still in flight. Terminal states stay as-is.
+        cancelled = False
+        if run.state and run.state.type not in (
+            StateType.COMPLETED,
+            StateType.FAILED,
+            StateType.CANCELLED,
+            StateType.CRASHED,
+        ):
+            try:
+                await client.set_flow_run_state(run_uuid, Cancelled(), force=True)
+                cancelled = True
+            except Exception as e:
+                log.warning("Could not cancel flow run %s: %s", flow_run_id, e)
+
+    cleanup_run = await run_deployment(
+        name=CLEANUP_DEPLOYMENT_NAME,
         parameters={"task_id": task_id},
         timeout=300,
-        tags=[f"teardown-preview-{task_id}"],
+        tags=[f"cleanup-task-{task_id}"],
     )
     return {
         "task_id": task_id,
-        "teardown_run_id": str(teardown_run.id),
-        "state": teardown_run.state_name if teardown_run.state else "UNKNOWN",
+        "flow_run_cancelled": cancelled,
+        "cleanup_run_id": str(cleanup_run.id),
+        "state": cleanup_run.state_name if cleanup_run.state else "UNKNOWN",
     }
 
 
@@ -770,7 +804,8 @@ async def ui_providers_create(
     provider_label: str = Form("custom"),
     base_url: str = Form(...),
     model: str = Form(...),
-    api_key: str = Form(...),
+    # Optional: endpoints without auth (Ollama local, vLLM no-auth, …) leave it blank.
+    api_key: str = Form(""),
     model_implementer: str = Form(""),
     model_reviewer: str = Form(""),
     model_simplifier: str = Form(""),
@@ -897,7 +932,7 @@ async def dashboard_cancel(flow_run_id: str):
     return RedirectResponse(url=f"/ui/tasks/{flow_run_id}", status_code=303)
 
 
-@app.post("/ui/tasks/{flow_run_id}/preview/teardown")
-async def dashboard_teardown(flow_run_id: str):
-    await delete_preview(flow_run_id)
+@app.post("/ui/tasks/{flow_run_id}/delete")
+async def dashboard_delete_task(flow_run_id: str):
+    await delete_task(flow_run_id)
     return RedirectResponse(url=f"/ui/tasks/{flow_run_id}", status_code=303)

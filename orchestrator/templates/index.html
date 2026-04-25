@@ -313,8 +313,9 @@
           <td><code>{{ p.port }}</code></td>
           <td style="text-align:right;">
             {% if p.flow_run_id %}
-            <form method="post" action="/ui/tasks/{{ p.flow_run_id }}/preview/teardown" style="margin:0; display:inline;">
-              <button type="submit" class="btn small ghost">Tear down</button>
+            <form method="post" action="/ui/tasks/{{ p.flow_run_id }}/delete" style="margin:0; display:inline;"
+                  onsubmit="return confirm('Delete this task? Removes its agent containers and tears down its preview. The worktree and log are kept.');">
+              <button type="submit" class="btn danger small">Delete task</button>
             </form>
             {% else %}<span class="dash" style="color: var(--text-4); font-size: 12px;">no flow run</span>{% endif %}
           </td>

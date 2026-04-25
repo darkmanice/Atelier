@@ -16,8 +16,8 @@ deployments:
     # Honors MAX_CONCURRENT_TASKS from your .env.
     concurrency_limit: 2
     description: "Pipeline Implementer → Reviewer → Simplifier"
-  - name: teardown
-    entrypoint: flows/pipeline.py:teardown_preview_flow
+  - name: cleanup
+    entrypoint: flows/pipeline.py:cleanup_task_flow
     work_pool:
       name: atelier-pool
-    description: "Teardown of a preview started by a previous task"
+    description: "Delete a task: remove its agent containers and tear down its preview"

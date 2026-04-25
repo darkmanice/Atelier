@@ -24,6 +24,15 @@ from pathlib import Path
 from agents.models import AgentResult, LogEntry, TaskInput
 
 
+# The role definition (including the SEARCH/REPLACE format example aider needs)
+# lives in `agents/prompts/implementer.md`. The file is loaded once at import
+# time and prepended to the user message that aider sends to the LLM. Edit the
+# .md (and rebuild the agent image) to tune behavior.
+_PROMPT_PREAMBLE = (
+    Path(__file__).parent / "prompts" / "implementer.md"
+).read_text(encoding="utf-8")
+
+
 def _echo(msg: str) -> None:
     """
     Writes a line to the container's stderr so `docker logs -f` sees it live.
@@ -38,20 +47,10 @@ def run(task: TaskInput) -> AgentResult:
         LogEntry(role=task.role, kind="info", content=f"Implementer starting on {task.feature_branch}")
     ]
 
-    # Build the prompt. If we come from a previous iteration with feedback,
-    # include it at the beginning. A short preamble nudges the model to
-    # actually WRITE files (not just discuss them) and to emit SEARCH/REPLACE
-    # blocks with explicit filenames, which is what Aider's diff edit-format
-    # expects.
-    preamble = (
-        "You are the implementer. Make the requested changes by creating or "
-        "modifying files in the current directory — do not just describe the "
-        "change. If the task does not name a specific file, pick a sensible "
-        "filename and create it. Emit Aider SEARCH/REPLACE blocks with the "
-        "filename on its own line above each block so the edit is applied.\n\n"
-        "[Task]\n"
-    )
-    prompt_parts = [preamble + task.prompt]
+    # Build the prompt: role definition (loaded from agents/prompts/implementer.md)
+    # + the actual task. Previous feedback, if any, goes at the very top so the
+    # model reads it before the role.
+    prompt_parts = [f"{_PROMPT_PREAMBLE}\n\n[Task]\n{task.prompt}"]
     if task.previous_feedback:
         prompt_parts.insert(0, f"[Feedback from previous review]\n{task.previous_feedback}\n")
     full_prompt = "\n".join(prompt_parts)
@@ -62,6 +61,12 @@ def run(task: TaskInput) -> AgentResult:
     # container. Works against any OpenAI-compatible endpoint (NVIDIA, OpenAI,
     # OpenRouter, vLLM, Ollama via /v1 ...).
     model_arg = f"openai/{task.model}"
+
+    # Edit format is configurable so a project can opt into a more forgiving
+    # output style with weaker models. `diff` (default) = SEARCH/REPLACE
+    # blocks, minimal but format-strict. `whole` = full-file rewrites,
+    # forgiving but token-expensive. `udiff` = unified diff, middle ground.
+    edit_format = os.environ.get("AIDER_EDIT_FORMAT", "diff").strip() or "diff"
 
     cmd = [
         "aider",
@@ -74,7 +79,7 @@ def run(task: TaskInput) -> AgentResult:
         "--no-analytics",
         "--no-gitignore",
         "--no-show-release-notes",
-        "--edit-format", "diff",
+        "--edit-format", edit_format,
         "--map-tokens", "2048",
         # Suppress Aider's chat-history summarizer. With `--message` (one-shot)
         # Aider exits right after the edit and its background summarizer
@@ -186,43 +191,99 @@ def run(task: TaskInput) -> AgentResult:
                 f"task branch is '{task.feature_branch}'."
             ),
         ))
-    else:
-        # Final commit with everything Aider has left in the working tree
-        commit_msg = f"Implementation: {task.prompt[:72]}"
-        try:
-            subprocess.run(
-                ["git", "add", "-A"],
-                cwd=task.worktree_path,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", commit_msg, "--allow-empty"],
-                cwd=task.worktree_path,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30,
-            )
-            sha_result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=task.worktree_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            sha = sha_result.stdout.strip()
-            commits = [sha]
-            log.append(LogEntry(role=task.role, kind="info", content=f"Committed as {sha}"))
-        except subprocess.CalledProcessError as e:
-            err = (e.stderr or "").strip() or (e.stdout or "").strip() or "no output"
-            log.append(LogEntry(
-                role=task.role,
-                kind="error",
-                content=f"Commit failed ({' '.join(e.cmd)}): {err}",
-            ))
+        return AgentResult(
+            success=False,
+            verdict="failed",
+            summary=f"Refusing to commit: HEAD is on '{current_branch or '(detached)'}', task branch is '{task.feature_branch}'.",
+            log=log,
+            commits=[],
+        )
+
+    # Aider exit 0 does NOT mean it actually applied any edit — when the
+    # model emits malformed SEARCH/REPLACE blocks, aider rejects them all
+    # and exits cleanly with an empty working tree. Catch that here so the
+    # reviewer doesn't waste 10 minutes spinning over `(no changes)`.
+    try:
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=task.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        working_tree_dirty = bool((status_result.stdout or "").strip())
+    except subprocess.CalledProcessError as e:
+        log.append(LogEntry(
+            role=task.role,
+            kind="error",
+            content=f"git status failed: {(e.stderr or e.stdout or '').strip()}",
+        ))
+        return AgentResult(
+            success=False, verdict="failed",
+            summary=f"git status failed after aider: {(e.stderr or '').strip()[:200]}",
+            log=log, commits=[],
+        )
+
+    if not working_tree_dirty:
+        summary = (
+            "Aider exited 0 but produced no file changes. The model likely "
+            "emitted invalid SEARCH/REPLACE blocks (aider rejected them all). "
+            "Try a coder-tuned model such as qwen2.5-coder:32b."
+        )
+        log.append(LogEntry(role=task.role, kind="error", content=summary))
+        return AgentResult(
+            success=False,
+            verdict="failed",
+            summary=summary,
+            log=log,
+            commits=[],
+        )
+
+    # Final commit with everything Aider has left in the working tree.
+    # No `--allow-empty`: we already verified the working tree is dirty.
+    commit_msg = f"Implementation: {task.prompt[:72]}"
+    try:
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=task.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=task.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        sha_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=task.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        sha = sha_result.stdout.strip()
+        commits = [sha]
+        log.append(LogEntry(role=task.role, kind="info", content=f"Committed as {sha}"))
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or "").strip() or (e.stdout or "").strip() or "no output"
+        log.append(LogEntry(
+            role=task.role,
+            kind="error",
+            content=f"Commit failed ({' '.join(e.cmd)}): {err}",
+        ))
+        return AgentResult(
+            success=False,
+            verdict="failed",
+            summary=f"Commit failed: {err[:300]}",
+            log=log,
+            commits=[],
+        )
 
     return AgentResult(
         success=returncode == 0,

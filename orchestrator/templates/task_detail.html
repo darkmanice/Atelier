@@ -23,13 +23,17 @@
   <p class="prompt">{{ task.prompt }}</p>
   {% endif %}
 
-  {% if task.state in ("Scheduled", "Pending", "Running", "Paused") %}
-  <div>
-    <form method="post" action="/ui/tasks/{{ task.id }}/cancel" style="margin: 0;">
-      <button type="submit" class="btn danger small">Cancel task</button>
+  <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    {% if task.state in ("Scheduled", "Pending", "Running", "Paused") %}
+      <form method="post" action="/ui/tasks/{{ task.id }}/cancel" style="margin: 0;">
+        <button type="submit" class="btn danger small">Cancel task</button>
+      </form>
+    {% endif %}
+    <form method="post" action="/ui/tasks/{{ task.id }}/delete" style="margin: 0;"
+          onsubmit="return confirm('Delete this task? This cancels any in-flight run, removes its agent containers, and tears down its preview. The worktree and log are kept.');">
+      <button type="submit" class="btn danger small">Delete task</button>
     </form>
   </div>
-  {% endif %}
 </section>
 
 {% if preview %}
@@ -39,9 +43,6 @@
     <div>
       <a href="{{ preview.url }}" target="_blank" rel="noopener noreferrer" class="url">{{ preview.url }}</a>
     </div>
-    <form method="post" action="/ui/tasks/{{ task.id }}/preview/teardown" style="margin: 0;">
-      <button type="submit" class="btn small ghost">Tear down preview</button>
-    </form>
   </div>
 </section>
 {% endif %}
