@@ -59,7 +59,7 @@ def _echo(msg: str) -> None:
     print(f"[openhands] {msg}", file=sys.stderr, flush=True)
 
 
-def run(task: TaskInput, mode: SessionMode) -> AgentResult:
+def run(task: TaskInput, mode: SessionMode, api_key: str = "") -> AgentResult:
     """Run a single OpenHands session in `task.worktree_path`.
 
     `mode` selects the system prompt and the post-run policy:
@@ -68,6 +68,11 @@ def run(task: TaskInput, mode: SessionMode) -> AgentResult:
         the old aider implementer).
       - `"simplify"` allows a no-op (an empty diff is OK and yields a
         success without a commit).
+
+    `api_key` is passed in here (not on TaskInput) for the same reason
+    aider used to receive it as a sibling argument: it must never be
+    serialised to disk via TaskInput / .task-events.jsonl / Prefect
+    parameters.
     """
     log: list[LogEntry] = [
         LogEntry(role=task.role, kind="info",
@@ -124,8 +129,8 @@ def run(task: TaskInput, mode: SessionMode) -> AgentResult:
             log=log + [LogEntry(role=task.role, kind="error", content=str(e))],
         )
 
-    api_key_value = os.environ.get("OPENAI_API_KEY") or "sk-no-auth"
-    base_url = os.environ.get("OPENAI_API_BASE") or task.base_url
+    api_key_value = api_key or "sk-no-auth"
+    base_url = task.base_url
 
     # `openai/<name>` makes LiteLLM (used by the SDK) treat the endpoint
     # as OpenAI-compatible regardless of the actual provider. This is

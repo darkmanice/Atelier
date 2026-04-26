@@ -1,32 +1,37 @@
 """
 Agent pipeline as a Prefect flow, with test gates.
 
-Phases:
+V2 phases (default spec):
   1. install (if there is a config)
-  2. implementer
-  3. quick_tests (gate — if it fails, feedback goes to the implementer)
-  4. reviewer
-  5. simplifier
-  6. full_tests (gate — if it fails, feedback goes to the implementer)
-  7. setup_services_e2e + e2e_tests + teardown_services_e2e (final gate)
+  2. agent-session   — one autonomous OpenHands run that implements the
+                       task. Replaces the V1 implementer/reviewer pair:
+                       the agent already iterates internally to
+                       self-correct, so there is no separate review pass.
+  3. quick_tests     — gate; failure restarts the spec from the start
+                       with the test output as feedback.
+  4. full_tests      — same gate semantics.
+  5. e2e-tests       — same, with setup/teardown wrapped around the gate.
+  6. simplify-pass   — optional, opt-in via pipeline_spec; one
+                       OpenHands run focused on cleanup.
+  7. preview         — optional, opt-in via pipeline_spec.
 
-Each deterministic gate can loop back to the implementer with feedback.
-Total number of iterations limited by MAX_RETRY_ATTEMPTS.
+Total number of restart attempts is bounded by MAX_RETRY_ATTEMPTS.
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from string import Template
-from typing import Optional
+from typing import Literal, Optional
 
 from prefect import flow, get_run_logger, task
 
 from agents.models import AgentResult, AgentRole, TaskInput
+from agents.openhands_session import run as run_openhands_session
 from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
 from orchestrator.config import DEFAULT_MODEL
-from orchestrator.container import cleanup_task_containers, run_agent
+from orchestrator.container import cleanup_task_containers
 from orchestrator.llm_config import fetch_api_key
 from orchestrator.runner import (
     RUNNER_E2E_IMAGE,
@@ -76,8 +81,15 @@ def task_create_worktree(
     }
 
 
-def _run_agent_task(
-    role: AgentRole,
+_MODE_TO_ROLE = {
+    "implement": AgentRole.IMPLEMENTER,
+    "simplify": AgentRole.SIMPLIFIER,
+}
+
+
+@task(name="agent-session")
+def task_openhands_session(
+    mode: Literal["implement", "simplify"],
     task_id: int,
     prompt: str,
     base_branch: str,
@@ -89,9 +101,15 @@ def _run_agent_task(
     worktree: dict,
     previous_feedback: Optional[str] = None,
 ) -> dict:
+    """One OpenHands V1 session — `mode` selects implement vs simplify.
+
+    Runs in-process inside the worker (no agent container). The
+    `AgentRole` field on `TaskInput` is kept just for tasklog grouping;
+    it has no other effect now that there is no role-based dispatch.
+    """
     task_input = TaskInput(
         task_id=task_id,
-        role=role,
+        role=_MODE_TO_ROLE[mode],
         prompt=prompt,
         worktree_path=worktree["host_path"],
         base_branch=base_branch,
@@ -101,33 +119,10 @@ def _run_agent_task(
         base_url=base_url,
         model=model,
     )
-    # api_key does NOT go into TaskInput. It is passed separately so that
-    # run_agent injects it directly as container env, without touching
-    # .task-input.json.
-    result = run_agent(
-        task_input,
-        Path(worktree["host_path"]),
-        Path(worktree["container_path"]),
-        Path(worktree["repo_container_path"]),
-        api_key=api_key,
-    )
-    tasklog.append_agent_result(task_id, role.value, result, model=model)
+    # api_key is passed sibling so it never lands in TaskInput / events.
+    result = run_openhands_session(task_input, mode=mode, api_key=api_key)
+    tasklog.append_agent_result(task_id, mode, result, model=model)
     return result.model_dump()
-
-
-@task(name="implementer")
-def task_implementer(**kwargs) -> dict:
-    return _run_agent_task(AgentRole.IMPLEMENTER, **kwargs)
-
-
-@task(name="reviewer")
-def task_reviewer(**kwargs) -> dict:
-    return _run_agent_task(AgentRole.REVIEWER, **kwargs)
-
-
-@task(name="simplifier")
-def task_simplifier(**kwargs) -> dict:
-    return _run_agent_task(AgentRole.SIMPLIFIER, **kwargs)
 
 
 # ---------------------------
@@ -351,19 +346,19 @@ def _fmt_test_feedback(phase_name: str, result_dict: dict) -> str:
     return f"{phase_name} failed.\n{result.summary_for_feedback()}"
 
 
-# Default spec used when the caller does not supply one. Mirrors the legacy
-# linear pipeline so the API stays backward-compatible (curl callers without
-# a spec keep their behaviour).
+# Default spec used when the caller does not supply one. Linear V2
+# pipeline: one OpenHands session, deterministic test gates, optional
+# preview. Simplify is opt-in (per P2: the user decides), so it is NOT
+# in the default spec.
 _DEFAULT_PIPELINE_SPEC: list[dict] = [
     {"type": t, "id": f"default-{t}"}
     for t in (
-        "implementer", "quick-tests", "reviewer", "simplifier",
-        "full-tests", "e2e-tests", "preview",
+        "agent-session", "quick-tests", "full-tests", "e2e-tests", "preview",
     )
 ]
 
 _VALID_BLOCK_TYPES = frozenset({
-    "implementer", "reviewer", "simplifier",
+    "agent-session", "simplify-pass",
     "quick-tests", "full-tests", "e2e-tests", "preview",
 })
 
@@ -439,9 +434,10 @@ def pipeline_flow(
         "Pipeline spec: " + " → ".join(s["type"] for s in spec),
     )
 
-    # Consume the orchestrator api_key once, at flow start. It lives only in
-    # this flow's stack and is passed as an arg to each run_agent. It never
-    # appears in Prefect parameters nor in .task-input.json.
+    # Consume the orchestrator api_key once, at flow start. It lives only
+    # in this flow's stack and is passed as a sibling arg to each
+    # OpenHands session call. It never appears in Prefect parameters
+    # nor in .task-events.jsonl.
     api_key = fetch_api_key(secret_token)
 
     # Connection args common to the 3 roles. The model travels separately, per role.
@@ -451,12 +447,11 @@ def pipeline_flow(
         "api_key": api_key,
     }
 
-    # NOTE: agent containers (labeled `atelier.task=<task_id>`) deliberately
-    # SURVIVE the end of this flow run. They are removed only when the user
-    # calls `DELETE /tasks/{flow_run_id}`, which fires `cleanup-task/cleanup`
-    # on the worker. This lets the user `docker exec -it atelier-agent-...`
-    # against a finished task to inspect state, and reuse the warm runtime
-    # if the same task is retried later.
+    # V2: there are no per-task agent containers anymore — the
+    # OpenHands SDK runs in-process inside this worker. `cleanup-task`
+    # is still wired (it tears down the preview); the
+    # `cleanup_task_containers` call inside it is harmless because no
+    # containers carry the `atelier.task` label in V2.
 
     # 1. Worktree (always — structural, hidden from the canvas)
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
@@ -481,8 +476,9 @@ def pipeline_flow(
         sid = step["id"]
         suffix = f"{sid}-attempt-{attempt_n}"
 
-        if t == "implementer":
-            res = task_implementer.with_options(name=f"implementer-{suffix}")(
+        if t == "agent-session":
+            res = task_openhands_session.with_options(name=f"agent-session-{suffix}")(
+                mode="implement",
                 task_id=task_id, prompt=prompt, base_branch=base_branch,
                 feature_branch=feature_branch, worktree=worktree,
                 previous_feedback=feedback, model=model_implementer, **_conn_kwargs,
@@ -495,33 +491,18 @@ def pipeline_flow(
                 )
             return
 
-        if t == "reviewer":
-            res = task_reviewer.with_options(name=f"reviewer-{suffix}")(
-                task_id=task_id, prompt=prompt, base_branch=base_branch,
-                feature_branch=feature_branch, worktree=worktree,
-                model=model_reviewer, **_conn_kwargs,
-            )
-            if not res["success"] and res.get("verdict") != "changes_requested":
-                raise _AbortPipeline(f"Reviewer failed: {res['summary']}")
-            if res.get("verdict") == "changes_requested":
-                raise _RestartAttempt(
-                    feedback=res.get("review_comments") or res["summary"],
-                    log_message="Reviewer requested changes",
-                )
-            return
-
-        if t == "simplifier":
-            res = task_simplifier.with_options(name=f"simplifier-{suffix}")(
+        if t == "simplify-pass":
+            res = task_openhands_session.with_options(name=f"simplify-pass-{suffix}")(
+                mode="simplify",
                 task_id=task_id, prompt=prompt, base_branch=base_branch,
                 feature_branch=feature_branch, worktree=worktree,
                 model=model_simplifier, **_conn_kwargs,
             )
             total_commits.extend(res.get("commits", []))
             if not res["success"]:
-                # Same policy as the old flow: simplifier issues are non-fatal,
-                # the diff was already approved by the reviewer (or there was
-                # no reviewer in this spec).
-                logger.warning("Simplifier failed; continuing")
+                # Simplifier issues are non-fatal: the implementation
+                # already passed the gates, so we keep what we have.
+                logger.warning("Simplify pass failed; continuing")
             return
 
         if t == "quick-tests":
