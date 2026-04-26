@@ -33,22 +33,21 @@ def append_llm_config(
     provider_label: str,
     base_url: str,
     model_implementer: str,
-    model_reviewer: str,
     model_simplifier: str,
 ) -> None:
     """
     Writes the resolved LLM configuration for this task. Called once from
     the flow after `init_log`. Never includes the api_key.
+
+    `model_implementer` drives the `agent-session` block; `model_simplifier`
+    drives `simplify-pass` (when present in the spec).
     """
-    # If all 3 models match, we show a single line.
-    same = model_implementer == model_reviewer == model_simplifier
-    if same:
-        models_block = f"- **Model (3 roles):** `{model_implementer}`\n"
+    if model_implementer == model_simplifier:
+        models_block = f"- **Model:** `{model_implementer}`\n"
     else:
         models_block = (
-            f"- **implementer:** `{model_implementer}`\n"
-            f"- **reviewer:** `{model_reviewer}`\n"
-            f"- **simplifier:** `{model_simplifier}`\n"
+            f"- **agent-session:** `{model_implementer}`\n"
+            f"- **simplify-pass:** `{model_simplifier}`\n"
         )
     _append(
         task_id,
@@ -73,8 +72,6 @@ def append_agent_result(
 ) -> None:
     verdict_badge = {
         "done": "✅ done",
-        "approved": "✅ approved",
-        "changes_requested": "🔁 changes requested",
         "failed": "❌ failed",
     }.get(result.verdict or "", result.verdict or "?")
 
@@ -90,12 +87,6 @@ def append_agent_result(
 
     if result.commits:
         parts.append(f"**Commits:** {', '.join(f'`{c}`' for c in result.commits)}\n\n")
-    if result.review_comments:
-        parts.append(
-            "**Review comments:**\n\n"
-            + _safe_fenced_block(result.review_comments)
-            + "\n\n"
-        )
 
     tool_calls = [e for e in result.log if e.kind in ("tool_call", "tool_result")]
     if tool_calls:

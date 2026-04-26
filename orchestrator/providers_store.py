@@ -35,8 +35,9 @@ class Provider:
     model: str
     created_at: str
     # Optional per-role overrides. "" = uses `model`.
+    # `model_implementer` drives the V2 `agent-session` block, while
+    # `model_simplifier` drives `simplify-pass`.
     model_implementer: str = ""
-    model_reviewer: str = ""
     model_simplifier: str = ""
 
     def model_for_role(self, role: str) -> str:
@@ -57,7 +58,6 @@ class _StoredProvider:
     # Per-role overrides. All with default "" for compatibility with entries
     # written before these fields existed.
     model_implementer: str = ""
-    model_reviewer: str = ""
     model_simplifier: str = ""
 
     def public(self) -> Provider:
@@ -69,7 +69,6 @@ class _StoredProvider:
             model=self.model,
             created_at=self.created_at,
             model_implementer=self.model_implementer,
-            model_reviewer=self.model_reviewer,
             model_simplifier=self.model_simplifier,
         )
 
@@ -87,12 +86,20 @@ class ProvidersStore:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return []
+        # Set of valid field names for forward/backward compatibility:
+        # entries written by older atelier versions may carry fields
+        # that no longer exist (e.g. `model_reviewer` in V1) — strip
+        # them silently rather than discarding the whole entry.
+        valid_fields = {f.name for f in _StoredProvider.__dataclass_fields__.values()}
         out: list[_StoredProvider] = []
         for item in raw.get("providers", []):
+            if not isinstance(item, dict):
+                continue
+            cleaned = {k: v for k, v in item.items() if k in valid_fields}
             try:
-                out.append(_StoredProvider(**item))
+                out.append(_StoredProvider(**cleaned))
             except TypeError:
-                # Old/corrupted format: skip silently.
+                # Genuinely corrupted entry: skip.
                 continue
         return out
 
@@ -127,7 +134,6 @@ class ProvidersStore:
         model: str,
         api_key: str,
         model_implementer: str = "",
-        model_reviewer: str = "",
         model_simplifier: str = "",
     ) -> Provider:
         # Empty `api_key` is allowed (e.g. local Ollama, vLLM without auth).
@@ -143,7 +149,6 @@ class ProvidersStore:
             created_at=datetime.now(timezone.utc).isoformat(),
             sealed_key=sealed_dict,
             model_implementer=model_implementer.strip(),
-            model_reviewer=model_reviewer.strip(),
             model_simplifier=model_simplifier.strip(),
         )
         with self._lock:
@@ -161,7 +166,6 @@ class ProvidersStore:
         model: str,
         api_key: str | None,
         model_implementer: str = "",
-        model_reviewer: str = "",
         model_simplifier: str = "",
     ) -> Provider | None:
         """
@@ -185,7 +189,6 @@ class ProvidersStore:
                     created_at=p.created_at,
                     sealed_key=new_sealed,
                     model_implementer=model_implementer.strip(),
-                    model_reviewer=model_reviewer.strip(),
                     model_simplifier=model_simplifier.strip(),
                 )
                 all_[i] = updated

@@ -85,14 +85,16 @@ class TaskCreate(BaseModel):
 
     # Per-role overrides only for THIS task. Priority:
     #   per-role task > global task > per-role provider > provider default.
+    # `model_implementer` drives the `agent-session` block, `model_simplifier`
+    # drives `simplify-pass`. (V2 collapsed the old reviewer role into the
+    # implementer's internal loop, so there is no model_reviewer anymore.)
     model_implementer: str | None = None
-    model_reviewer: str | None = None
     model_simplifier: str | None = None
 
-    # Optional per-task pipeline spec — an ordered list of `{type, id}` blocks
-    # describing what runs and in what order. None = the default sequence
-    # (implementer → quick-tests → reviewer → simplifier → full-tests →
-    # e2e-tests → preview). See `BLOCK_CATALOG` for legal `type` values.
+    # Optional per-task pipeline spec — an ordered list of `{type, id}`
+    # blocks describing what runs and in what order. None = the default
+    # sequence (agent-session → quick-tests → full-tests → e2e-tests →
+    # preview). See `BLOCK_CATALOG` for legal `type` values.
     pipeline_spec: list[dict] | None = None
 
 
@@ -106,7 +108,6 @@ class ProviderCreate(BaseModel):
     api_key: SecretStr | None = None
     # Per-role overrides. Empty = uses `model`.
     model_implementer: str = ""
-    model_reviewer: str = ""
     model_simplifier: str = ""
 
 
@@ -197,9 +198,14 @@ class _ResolvedLLM:
     provider_label: str
     base_url: str
     model_implementer: str
-    model_reviewer: str
     model_simplifier: str
     api_key: str | None
+
+
+# Roles that still take a model in V2: `agent-session` (implementer) and
+# `simplify-pass` (simplifier). Reviewer was absorbed by the implementer's
+# internal loop.
+_ROLES_WITH_MODEL = ("implementer", "simplifier")
 
 
 def _resolve_llm_from_payload(payload: TaskCreate) -> _ResolvedLLM:
@@ -227,11 +233,7 @@ def _resolve_llm_from_payload(payload: TaskCreate) -> _ResolvedLLM:
                 or prov.model_for_role(role)
             )
 
-        chosen = {
-            "implementer": pick("implementer"),
-            "reviewer": pick("reviewer"),
-            "simplifier": pick("simplifier"),
-        }
+        chosen = {role: pick(role) for role in _ROLES_WITH_MODEL}
         missing = [r for r, m in chosen.items() if not m]
         if missing:
             raise HTTPException(
@@ -243,7 +245,6 @@ def _resolve_llm_from_payload(payload: TaskCreate) -> _ResolvedLLM:
             provider_label=prov.provider_label,
             base_url=prov.base_url,
             model_implementer=chosen["implementer"],
-            model_reviewer=chosen["reviewer"],
             model_simplifier=chosen["simplifier"],
             api_key=api_key,
         )
@@ -251,8 +252,8 @@ def _resolve_llm_from_payload(payload: TaskCreate) -> _ResolvedLLM:
     # One-shot mode: base_url is required; per-role model accepts overrides.
     if not payload.base_url:
         raise HTTPException(400, "base_url is required without a provider_id")
-    if not global_override and not all(_role_task_override(r) for r in ("implementer", "reviewer", "simplifier")):
-        raise HTTPException(400, "model (or all three per-role models) is required without a provider_id")
+    if not global_override and not all(_role_task_override(r) for r in _ROLES_WITH_MODEL):
+        raise HTTPException(400, "model (or all per-role models) is required without a provider_id")
     api_key = payload.api_key.get_secret_value() if payload.api_key else None
 
     def pick_oneshot(role: str) -> str:
@@ -262,7 +263,6 @@ def _resolve_llm_from_payload(payload: TaskCreate) -> _ResolvedLLM:
         provider_label=payload.provider_label,
         base_url=payload.base_url,
         model_implementer=pick_oneshot("implementer"),
-        model_reviewer=pick_oneshot("reviewer"),
         model_simplifier=pick_oneshot("simplifier"),
         api_key=api_key,
     )
@@ -296,7 +296,6 @@ async def create_task(payload: TaskCreate) -> TaskResponse:
         "provider_label": resolved.provider_label,
         "base_url": resolved.base_url,
         "model_implementer": resolved.model_implementer,
-        "model_reviewer": resolved.model_reviewer,
         "model_simplifier": resolved.model_simplifier,
         "secret_token": secret_token,
         "pipeline_spec": payload.pipeline_spec,
@@ -383,16 +382,20 @@ async def get_task_log(task_id: int) -> str:
 
 # Block types the user can place on the Drawflow canvas. Structural steps
 # (worktree, load-config, install-deps, e2e-setup/teardown) are NOT exposed
-# here — `pipeline_flow` injects them automatically. `preview` carries
-# `max=1`: at most one preview block per spec.
+# here — `pipeline_flow` injects them automatically.
+#
+# V2: a single LLM-driven block (`agent-session`) replaces the V1 trio
+# implementer/reviewer/simplifier. `simplify-pass` is opt-in for users
+# who still want a focused cleanup phase after the gates pass.
+# `agent-session` is `max=1`: there is no point chaining two of them
+# in the same spec (each is already an iterative loop).
 BLOCK_CATALOG: list[dict] = [
-    {"type": "implementer", "label": "Implementer", "kind": "agent"},
-    {"type": "reviewer",    "label": "Reviewer",    "kind": "agent"},
-    {"type": "simplifier",  "label": "Simplifier",  "kind": "agent"},
-    {"type": "quick-tests", "label": "Quick tests", "kind": "gate"},
-    {"type": "full-tests",  "label": "Full tests",  "kind": "gate"},
-    {"type": "e2e-tests",   "label": "E2E tests",   "kind": "gate"},
-    {"type": "preview",     "label": "Preview",     "kind": "preview", "max": 1},
+    {"type": "agent-session", "label": "Agent session", "kind": "agent",   "max": 1},
+    {"type": "quick-tests",   "label": "Quick tests",   "kind": "gate"},
+    {"type": "full-tests",    "label": "Full tests",    "kind": "gate"},
+    {"type": "e2e-tests",     "label": "E2E tests",     "kind": "gate"},
+    {"type": "simplify-pass", "label": "Simplify",      "kind": "agent",   "max": 1},
+    {"type": "preview",       "label": "Preview",       "kind": "preview", "max": 1},
 ]
 
 ALLOWED_BLOCK_TYPES: frozenset[str] = frozenset(b["type"] for b in BLOCK_CATALOG)
@@ -400,14 +403,14 @@ SINGLETON_BLOCK_TYPES: frozenset[str] = frozenset(
     b["type"] for b in BLOCK_CATALOG if b.get("max") == 1
 )
 
-# Default spec used when the caller does not provide one. Mirrors the legacy
-# linear flow exactly so existing API callers (curl scripts, etc.) keep their
-# behaviour unchanged.
+# Default spec used when the caller does not provide one. Linear V2
+# pipeline: one OpenHands session, deterministic test gates, optional
+# preview at the end. Simplify is opt-in (the user adds it on the
+# canvas), so it is NOT in the default.
 DEFAULT_PIPELINE_SPEC: list[dict] = [
     {"type": t, "id": f"default-{t}"}
     for t in (
-        "implementer", "quick-tests", "reviewer", "simplifier",
-        "full-tests", "e2e-tests", "preview",
+        "agent-session", "quick-tests", "full-tests", "e2e-tests", "preview",
     )
 ]
 
@@ -599,7 +602,6 @@ async def create_provider(payload: ProviderCreate) -> dict:
             model=payload.model,
             api_key=payload.api_key.get_secret_value() if payload.api_key else "",
             model_implementer=payload.model_implementer,
-            model_reviewer=payload.model_reviewer,
             model_simplifier=payload.model_simplifier,
         )
     except CryptoError as e:
@@ -888,7 +890,6 @@ async def dashboard_create(
     model: str = Form(""),
     api_key: str = Form(""),
     model_implementer: str = Form(""),
-    model_reviewer: str = Form(""),
     model_simplifier: str = Form(""),
     pipeline_spec: str = Form(""),
 ):
@@ -902,7 +903,6 @@ async def dashboard_create(
         model=model or None,
         api_key=SecretStr(api_key) if api_key else None,
         model_implementer=model_implementer or None,
-        model_reviewer=model_reviewer or None,
         model_simplifier=model_simplifier or None,
         pipeline_spec=_parse_pipeline_spec(pipeline_spec),
     ))
@@ -961,7 +961,6 @@ async def ui_providers_create(
     # Optional: endpoints without auth (Ollama local, vLLM no-auth, …) leave it blank.
     api_key: str = Form(""),
     model_implementer: str = Form(""),
-    model_reviewer: str = Form(""),
     model_simplifier: str = Form(""),
 ):
     if not crypto_available():
@@ -973,7 +972,6 @@ async def ui_providers_create(
         model=model,
         api_key=api_key,
         model_implementer=model_implementer,
-        model_reviewer=model_reviewer,
         model_simplifier=model_simplifier,
     )
     return RedirectResponse(url="/providers-ui", status_code=303)
@@ -988,7 +986,6 @@ async def ui_providers_edit(
     model: str = Form(...),
     api_key: str = Form(""),
     model_implementer: str = Form(""),
-    model_reviewer: str = Form(""),
     model_simplifier: str = Form(""),
 ):
     if not crypto_available():
@@ -1001,7 +998,6 @@ async def ui_providers_edit(
         model=model,
         api_key=api_key or None,
         model_implementer=model_implementer,
-        model_reviewer=model_reviewer,
         model_simplifier=model_simplifier,
     )
     if updated is None:

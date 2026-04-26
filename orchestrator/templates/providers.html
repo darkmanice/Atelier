@@ -99,31 +99,26 @@
       </div>
     </div>
 
-    <details class="role-overrides" {% if editing and (edit_target.model_implementer or edit_target.model_reviewer or edit_target.model_simplifier) %}open{% endif %}>
+    <details class="role-overrides" {% if editing and (edit_target.model_implementer or edit_target.model_simplifier) %}open{% endif %}>
       <summary>
-        Models per role <span class="role-overrides-hint">(optional)</span>
+        Models per phase <span class="role-overrides-hint">(optional)</span>
       </summary>
       <p class="role-overrides-desc">
-        If you set a model for a specific role, it's used only by that agent.
-        Empty = the default model above is used.
+        Override the model used by a specific pipeline phase. Empty = the
+        default model above is used. The model must support tool-calling
+        (e.g. <code>qwen3.6:latest</code>, <code>qwen2.5-coder:32b</code>,
+        <code>devstral</code>) — non-tool-calling models will fail.
       </p>
       <div class="field-grid">
         <div class="field">
-          <label class="field-label" for="model_implementer">Implementer</label>
+          <label class="field-label" for="model_implementer">Agent session</label>
           <input type="text" id="model_implementer" name="model_implementer"
                  autocomplete="off" spellcheck="false"
                  placeholder="(use default)"
                  value="{{ edit_target.model_implementer if editing else '' }}">
         </div>
         <div class="field">
-          <label class="field-label" for="model_reviewer">Reviewer</label>
-          <input type="text" id="model_reviewer" name="model_reviewer"
-                 autocomplete="off" spellcheck="false"
-                 placeholder="(use default)"
-                 value="{{ edit_target.model_reviewer if editing else '' }}">
-        </div>
-        <div class="field">
-          <label class="field-label" for="model_simplifier">Simplifier</label>
+          <label class="field-label" for="model_simplifier">Simplify pass</label>
           <input type="text" id="model_simplifier" name="model_simplifier"
                  autocomplete="off" spellcheck="false"
                  placeholder="(use default)"

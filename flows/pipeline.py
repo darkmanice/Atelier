@@ -406,7 +406,6 @@ def pipeline_flow(
     provider_label: str = "custom",
     base_url: str = "",
     model_implementer: str = DEFAULT_MODEL,
-    model_reviewer: str = DEFAULT_MODEL,
     model_simplifier: str = DEFAULT_MODEL,
     secret_token: Optional[str] = None,
     pipeline_spec: Optional[list[dict]] = None,
@@ -424,7 +423,6 @@ def pipeline_flow(
         provider_label=provider_label,
         base_url=base_url,
         model_implementer=model_implementer,
-        model_reviewer=model_reviewer,
         model_simplifier=model_simplifier,
     )
     tasklog.append_orchestrator(task_id, f"Flow started (task_id={task_id})")

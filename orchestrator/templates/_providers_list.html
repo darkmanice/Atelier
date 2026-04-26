@@ -28,9 +28,8 @@
         <td>
           <div class="role-pills">
             <span class="role-pill"><span class="role">default</span><span class="mono">{{ p.model }}</span></span>
-            {% if p.model_implementer %}<span class="role-pill"><span class="role">impl</span><span class="mono">{{ p.model_implementer }}</span></span>{% endif %}
-            {% if p.model_reviewer %}<span class="role-pill"><span class="role">rev</span><span class="mono">{{ p.model_reviewer }}</span></span>{% endif %}
-            {% if p.model_simplifier %}<span class="role-pill"><span class="role">simp</span><span class="mono">{{ p.model_simplifier }}</span></span>{% endif %}
+            {% if p.model_implementer %}<span class="role-pill"><span class="role">agent</span><span class="mono">{{ p.model_implementer }}</span></span>{% endif %}
+            {% if p.model_simplifier %}<span class="role-pill"><span class="role">simplify</span><span class="mono">{{ p.model_simplifier }}</span></span>{% endif %}
           </div>
         </td>
         <td style="text-align:right; white-space: nowrap;">

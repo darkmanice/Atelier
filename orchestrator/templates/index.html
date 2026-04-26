@@ -76,7 +76,6 @@
             <option value="{{ p.id }}"
                     data-model="{{ p.model }}"
                     data-model-implementer="{{ p.model_implementer }}"
-                    data-model-reviewer="{{ p.model_reviewer }}"
                     data-model-simplifier="{{ p.model_simplifier }}"
                     {% if loop.first %}selected{% endif %}>
               {{ p.label }}
@@ -90,7 +89,7 @@
       <label class="field-label" for="model-input">
         Model
         <span class="hint-icon" tabindex="0" role="img" aria-label="Help"
-              data-tooltip="Used for all 3 roles. Auto-filled with the provider's default; you can change it or filter by typing.">ⓘ</span>
+              data-tooltip="Used by every LLM-driven phase (agent-session, simplify-pass). Must support tool-calling. Auto-filled with the provider's default; you can change it or filter by typing.">ⓘ</span>
       </label>
       <div class="combobox" data-for="model">
         <input type="text" class="combobox-input field-input" id="model-input"
@@ -141,15 +140,16 @@
 
     <details class="role-overrides" id="role-overrides-details">
       <summary>
-        Vary model per role <span class="role-overrides-hint">(optional, for this task)</span>
+        Vary model per phase <span class="role-overrides-hint">(optional, for this task)</span>
       </summary>
       <p class="role-overrides-desc">
-        Override the model for a specific role only for this task.
-        Empty = uses the model above (or the provider's if an override is already configured).
+        Override the model for a specific pipeline phase only for this task.
+        Empty = uses the model above (or the provider's, if an override is
+        already configured). Both phases require tool-calling support.
       </p>
       <div class="field-grid">
         <div class="field">
-          <label class="field-label" for="model_implementer-input">Implementer</label>
+          <label class="field-label" for="model_implementer-input">Agent session</label>
           <div class="combobox" data-for="model_implementer">
             <input type="text" class="combobox-input field-input" id="model_implementer-input"
                    autocomplete="off" spellcheck="false"
@@ -160,18 +160,7 @@
                   tabindex="-1" aria-hidden="true"></select>
         </div>
         <div class="field">
-          <label class="field-label" for="model_reviewer-input">Reviewer</label>
-          <div class="combobox" data-for="model_reviewer">
-            <input type="text" class="combobox-input field-input" id="model_reviewer-input"
-                   autocomplete="off" spellcheck="false"
-                   placeholder="(use default)">
-            <div class="combobox-listbox" role="listbox" hidden></div>
-          </div>
-          <select id="model_reviewer" name="model_reviewer" class="combobox-source role-model-source"
-                  tabindex="-1" aria-hidden="true"></select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="model_simplifier-input">Simplifier</label>
+          <label class="field-label" for="model_simplifier-input">Simplify pass</label>
           <div class="combobox" data-for="model_simplifier">
             <input type="text" class="combobox-input field-input" id="model_simplifier-input"
                    autocomplete="off" spellcheck="false"
@@ -237,13 +226,12 @@
         syncBranchEnabled();
       }
 
-      // Load provider models into all comboboxes (main + 3 per role).
+      // Load provider models into all comboboxes (main + per-phase).
       const providerEl = document.getElementById('provider_id');
       const modelSelect = document.getElementById('model');
       const modelInput = document.getElementById('model-input');
       const roleSelects = {
         implementer: document.getElementById('model_implementer'),
-        reviewer:    document.getElementById('model_reviewer'),
         simplifier:  document.getElementById('model_simplifier'),
       };
 
@@ -271,9 +259,9 @@
         modelInput.placeholder = 'Type to filter…';
         modelSelect.dispatchEvent(new Event('htmx:afterSwap'));
 
-        // Per-role comboboxes: clone the same options, starting empty.
+        // Per-phase comboboxes: clone the same options, starting empty.
         // The user fills them in if they want an override for this task.
-        for (const role of ['implementer', 'reviewer', 'simplifier']) {
+        for (const role of ['implementer', 'simplifier']) {
           const sel = roleSelects[role];
           if (!sel) continue;
           // Leave an empty option for "(use default)" and then the list.

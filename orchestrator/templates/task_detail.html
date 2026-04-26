@@ -86,7 +86,7 @@
         for (const el of children) {
           const tag = el.tagName;
           if (tag === 'H3') {
-            // Agent section: "implementer — ✅ done"
+            // Agent section header: "implement — ✅ done" / "simplify — ..."
             const role = el.textContent.split(EM_DASH)[0].trim().toLowerCase() || 'unknown';
             current = { role, kind: 'agent', elements: [el] };
             blocks.push(current);
@@ -133,8 +133,9 @@
           return;
         }
 
-        // Order: orchestrator first, then implementer/reviewer/simplifier, then others.
-        const ORDER = ['orchestrator', 'implementer', 'reviewer', 'simplifier'];
+        // Order: orchestrator first, then the V2 LLM phases by name (implement, simplify),
+        // then anything else.
+        const ORDER = ['orchestrator', 'implement', 'simplify'];
         const roles = [...counts.keys()].sort((a, b) => {
           const ia = ORDER.indexOf(a); const ib = ORDER.indexOf(b);
           if (ia === -1 && ib === -1) return a.localeCompare(b);

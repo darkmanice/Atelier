@@ -11,18 +11,16 @@ from pydantic import BaseModel, Field
 class TaskState(str, Enum):
     PENDING = "pending"
     IMPLEMENTING = "implementing"
-    READY_FOR_REVIEW = "ready_for_review"
-    REVIEWING = "reviewing"
-    CHANGES_REQUESTED = "changes_requested"
-    APPROVED = "approved"
     SIMPLIFYING = "simplifying"
     DONE = "done"
     FAILED = "failed"
 
 
 class AgentRole(str, Enum):
+    """Pipeline phases that drive an LLM. Reviewer was removed in V2 —
+    the OpenHands session iterates internally to self-correct, so a
+    separate review role is no longer meaningful."""
     IMPLEMENTER = "implementer"
-    REVIEWER = "reviewer"
     SIMPLIFIER = "simplifier"
 
 
@@ -55,8 +53,7 @@ class LogEntry(BaseModel):
 
 class AgentResult(BaseModel):
     success: bool
-    verdict: Literal["done", "approved", "changes_requested", "failed"] | None = None
+    verdict: Literal["done", "failed"] | None = None
     summary: str
     log: list[LogEntry] = Field(default_factory=list)
     commits: list[str] = Field(default_factory=list)
-    review_comments: str | None = None
