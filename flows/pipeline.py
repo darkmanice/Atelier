@@ -350,6 +350,57 @@ def _fmt_test_feedback(phase_name: str, result_dict: dict) -> str:
     return f"{phase_name} failed.\n{result.summary_for_feedback()}"
 
 
+# Default spec used when the caller does not supply one. Mirrors the legacy
+# linear pipeline so the API stays backward-compatible (curl callers without
+# a spec keep their behaviour).
+_DEFAULT_PIPELINE_SPEC: list[dict] = [
+    {"type": t, "id": f"default-{t}"}
+    for t in (
+        "implementer", "quick-tests", "reviewer", "simplifier",
+        "full-tests", "e2e-tests", "preview",
+    )
+]
+
+_VALID_BLOCK_TYPES = frozenset({
+    "implementer", "reviewer", "simplifier",
+    "quick-tests", "full-tests", "e2e-tests", "preview",
+})
+
+
+class _RestartAttempt(Exception):
+    """Raised by a block runner to signal: restart from the beginning of the
+    spec on the next attempt. Carries the feedback to seed the next loop."""
+    def __init__(self, feedback: str, log_message: str):
+        super().__init__(log_message)
+        self.feedback = feedback
+        self.log_message = log_message
+
+
+class _AbortPipeline(Exception):
+    """Raised when a block hits an unrecoverable failure (no retry possible)."""
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def _normalize_spec(raw: Optional[list[dict]]) -> list[dict]:
+    """Drops unknown block types and assigns a deterministic id when missing.
+    Empty / None → the default sequence so old API callers keep working."""
+    if not raw:
+        return list(_DEFAULT_PIPELINE_SPEC)
+    out: list[dict] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t not in _VALID_BLOCK_TYPES:
+            continue
+        rid = item.get("id")
+        sid = rid if isinstance(rid, str) and rid else f"{t}-{idx}"
+        out.append({"type": t, "id": sid})
+    return out or list(_DEFAULT_PIPELINE_SPEC)
+
+
 @flow(name="atelier", log_prints=True)
 def pipeline_flow(
     task_id: int,
@@ -363,11 +414,14 @@ def pipeline_flow(
     model_reviewer: str = DEFAULT_MODEL,
     model_simplifier: str = DEFAULT_MODEL,
     secret_token: Optional[str] = None,
+    pipeline_spec: Optional[list[dict]] = None,
 ) -> dict:
     logger = get_run_logger()
 
     if not feature_branch:
         feature_branch = f"pipeline/task-{task_id}"
+
+    spec = _normalize_spec(pipeline_spec)
 
     tasklog.init_log(task_id, prompt, repo_path, feature_branch)
     tasklog.append_llm_config(
@@ -379,11 +433,14 @@ def pipeline_flow(
         model_simplifier=model_simplifier,
     )
     tasklog.append_orchestrator(task_id, f"Flow started (task_id={task_id})")
+    tasklog.append_orchestrator(
+        task_id,
+        "Pipeline spec: " + " → ".join(s["type"] for s in spec),
+    )
 
-    # Consume the orchestrator api_key once, at flow start.
-    # It lives only in this flow's stack and is passed as an arg to each
-    # run_agent. It never appears in Prefect parameters nor in
-    # .task-input.json.
+    # Consume the orchestrator api_key once, at flow start. It lives only in
+    # this flow's stack and is passed as an arg to each run_agent. It never
+    # appears in Prefect parameters nor in .task-input.json.
     api_key = fetch_api_key(secret_token)
 
     # Connection args common to the 3 roles. The model travels separately, per role.
@@ -400,7 +457,7 @@ def pipeline_flow(
     # against a finished task to inspect state, and reuse the warm runtime
     # if the same task is retried later.
 
-    # 1. Worktree
+    # 1. Worktree (always — structural, hidden from the canvas)
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
 
     # 2. Load test config
@@ -410,134 +467,161 @@ def pipeline_flow(
     if config_dict:
         task_install(worktree, config_dict)
 
-    # 4. Loop implementer -> quick -> reviewer -> simplifier -> full -> e2e
+    # 4. Run the user-defined spec inside the retry loop.
     feedback: Optional[str] = None
     total_commits: list[str] = []
+    preview_info: dict = {"started": False}
 
+    def _run_step(step: dict, attempt_n: int) -> None:
+        """Execute one block. Mutates total_commits/preview_info; raises
+        _RestartAttempt for soft failures and _AbortPipeline for hard ones."""
+        nonlocal preview_info
+        t = step["type"]
+        sid = step["id"]
+        suffix = f"{sid}-attempt-{attempt_n}"
+
+        if t == "implementer":
+            res = task_implementer.with_options(name=f"implementer-{suffix}")(
+                task_id=task_id, prompt=prompt, base_branch=base_branch,
+                feature_branch=feature_branch, worktree=worktree,
+                previous_feedback=feedback, model=model_implementer, **_conn_kwargs,
+            )
+            total_commits.extend(res.get("commits", []))
+            if not res["success"]:
+                raise _RestartAttempt(
+                    feedback=f"Implementer failed: {res['summary']}",
+                    log_message=f"Implementer failed, looping back: {res['summary'][:200]}",
+                )
+            return
+
+        if t == "reviewer":
+            res = task_reviewer.with_options(name=f"reviewer-{suffix}")(
+                task_id=task_id, prompt=prompt, base_branch=base_branch,
+                feature_branch=feature_branch, worktree=worktree,
+                model=model_reviewer, **_conn_kwargs,
+            )
+            if not res["success"] and res.get("verdict") != "changes_requested":
+                raise _AbortPipeline(f"Reviewer failed: {res['summary']}")
+            if res.get("verdict") == "changes_requested":
+                raise _RestartAttempt(
+                    feedback=res.get("review_comments") or res["summary"],
+                    log_message="Reviewer requested changes",
+                )
+            return
+
+        if t == "simplifier":
+            res = task_simplifier.with_options(name=f"simplifier-{suffix}")(
+                task_id=task_id, prompt=prompt, base_branch=base_branch,
+                feature_branch=feature_branch, worktree=worktree,
+                model=model_simplifier, **_conn_kwargs,
+            )
+            total_commits.extend(res.get("commits", []))
+            if not res["success"]:
+                # Same policy as the old flow: simplifier issues are non-fatal,
+                # the diff was already approved by the reviewer (or there was
+                # no reviewer in this spec).
+                logger.warning("Simplifier failed; continuing")
+            return
+
+        if t == "quick-tests":
+            res = task_quick_tests.with_options(name=f"quick-tests-{suffix}")(
+                worktree, config_dict
+            )
+            if not res.get("skipped") and not res["success"]:
+                raise _RestartAttempt(
+                    feedback=_fmt_test_feedback("Quick tests", res),
+                    log_message="Quick tests failed, restarting from spec start",
+                )
+            return
+
+        if t == "full-tests":
+            res = task_full_tests.with_options(name=f"full-tests-{suffix}")(
+                worktree, config_dict
+            )
+            if not res.get("skipped") and not res["success"]:
+                raise _RestartAttempt(
+                    feedback=_fmt_test_feedback("Full tests", res),
+                    log_message="Full tests failed, restarting from spec start",
+                )
+            return
+
+        if t == "e2e-tests":
+            # e2e setup/teardown are structural — they always wrap the gate
+            # so the runner never sees a half-up environment. teardown runs
+            # even if the gate raises.
+            if not (config_dict and config_dict.get("e2e_tests")):
+                # Nothing to set up; the gate task will report skipped.
+                _ = task_e2e_tests.with_options(name=f"e2e-tests-{suffix}")(
+                    worktree, config_dict
+                )
+                return
+
+            setup_res = task_e2e_setup.with_options(name=f"e2e-setup-{suffix}")(
+                worktree, config_dict
+            )
+            if not setup_res["success"]:
+                task_e2e_teardown.with_options(name=f"e2e-teardown-{suffix}")(
+                    worktree, config_dict
+                )
+                raise _AbortPipeline(
+                    f"E2E setup failed: {setup_res.get('stderr','')[-300:]}"
+                )
+
+            try:
+                res = task_e2e_tests.with_options(name=f"e2e-tests-{suffix}")(
+                    worktree, config_dict
+                )
+            finally:
+                task_e2e_teardown.with_options(name=f"e2e-teardown-{suffix}")(
+                    worktree, config_dict
+                )
+
+            if not res.get("skipped") and not res["success"]:
+                raise _RestartAttempt(
+                    feedback=_fmt_test_feedback("E2E tests", res),
+                    log_message="E2E failed, restarting from spec start",
+                )
+            return
+
+        if t == "preview":
+            preview_info = task_preview_up.with_options(name=f"preview-{suffix}")(
+                task_id, worktree, config_dict
+            )
+            return
+
+        # Should be unreachable thanks to _normalize_spec.
+        raise _AbortPipeline(f"Unknown block type: {t}")
+
+    completed = False
     for attempt in range(MAX_RETRY_ATTEMPTS + 1):
         n = attempt + 1
         logger.info(f"=== Attempt {n}/{MAX_RETRY_ATTEMPTS + 1} ===")
         tasklog.append_orchestrator(task_id, f"Attempt {n}")
 
-        # Implementer
-        impl = task_implementer.with_options(name=f"implementer-attempt-{n}")(
-            task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, worktree=worktree,
-            previous_feedback=feedback, model=model_implementer, **_conn_kwargs,
-        )
-        total_commits.extend(impl.get("commits", []))
-        if not impl["success"]:
-            # Loop back with feedback (e.g. "Aider exited 0 but produced no
-            # file changes…") so the next attempt can correct course. Only
-            # raise if we have exhausted retries.
+        try:
+            for step in spec:
+                _run_step(step, n)
+        except _RestartAttempt as restart:
+            tasklog.append_orchestrator(task_id, restart.log_message)
             if attempt < MAX_RETRY_ATTEMPTS:
-                feedback = f"Implementer failed: {impl['summary']}"
-                tasklog.append_orchestrator(task_id, f"Implementer failed, looping back: {impl['summary'][:200]}")
+                feedback = restart.feedback
                 continue
-            else:
-                msg = f"Implementer failed after max retries: {impl['summary']}"
-                tasklog.append_final(task_id, "failed", msg, "(no diff)")
-                raise RuntimeError(msg)
+            msg = f"{restart.log_message} (max retries exhausted)"
+            tasklog.append_final(task_id, "failed", msg, "(no diff)")
+            raise RuntimeError(msg)
+        except _AbortPipeline as abort:
+            tasklog.append_final(task_id, "failed", abort.message, "(no diff)")
+            raise RuntimeError(abort.message)
 
-        # Gate 1: quick tests
-        quick = task_quick_tests.with_options(name=f"quick-tests-attempt-{n}")(
-            worktree, config_dict
-        )
-        if not quick.get("skipped") and not quick["success"]:
-            if attempt < MAX_RETRY_ATTEMPTS:
-                feedback = _fmt_test_feedback("Quick tests", quick)
-                tasklog.append_orchestrator(task_id, "Quick tests failed, looping back to implementer")
-                continue
-            else:
-                msg = "Quick tests failed after max retries"
-                tasklog.append_final(task_id, "failed", msg, "(no diff)")
-                raise RuntimeError(msg)
-
-        # Reviewer
-        rev = task_reviewer.with_options(name=f"reviewer-attempt-{n}")(
-            task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, worktree=worktree,
-            model=model_reviewer, **_conn_kwargs,
-        )
-        if not rev["success"] and rev.get("verdict") != "changes_requested":
-            raise RuntimeError(f"Reviewer failed: {rev['summary']}")
-
-        if rev.get("verdict") == "changes_requested":
-            if attempt < MAX_RETRY_ATTEMPTS:
-                feedback = rev.get("review_comments") or rev["summary"]
-                tasklog.append_orchestrator(task_id, "Reviewer requested changes")
-                continue
-            else:
-                msg = "Reviewer kept requesting changes after max retries"
-                tasklog.append_final(task_id, "failed", msg, "(no diff)")
-                raise RuntimeError(msg)
-
-        # Simplifier
-        simp = task_simplifier.with_options(name=f"simplifier-attempt-{n}")(
-            task_id=task_id, prompt=prompt, base_branch=base_branch,
-            feature_branch=feature_branch, worktree=worktree,
-            model=model_simplifier, **_conn_kwargs,
-        )
-        total_commits.extend(simp.get("commits", []))
-        if not simp["success"]:
-            logger.warning("Simplifier failed but code is already approved; continuing")
-
-        # Gate 2: full tests
-        full = task_full_tests.with_options(name=f"full-tests-attempt-{n}")(
-            worktree, config_dict
-        )
-        if not full.get("skipped") and not full["success"]:
-            if attempt < MAX_RETRY_ATTEMPTS:
-                feedback = _fmt_test_feedback("Full tests", full)
-                tasklog.append_orchestrator(task_id, "Full tests failed, looping back")
-                continue
-            else:
-                msg = "Full tests failed after max retries"
-                tasklog.append_final(task_id, "failed", msg, "(no diff)")
-                raise RuntimeError(msg)
-
-        # Gate 3: E2E (with setup + teardown always)
-        if config_dict and config_dict.get("e2e_tests"):
-            setup_res = task_e2e_setup.with_options(name=f"e2e-setup-attempt-{n}")(
-                worktree, config_dict
-            )
-            if not setup_res["success"]:
-                # Still attempt teardown for cleanup
-                task_e2e_teardown.with_options(name=f"e2e-teardown-attempt-{n}")(
-                    worktree, config_dict
-                )
-                raise RuntimeError(f"E2E setup failed: {setup_res.get('stderr','')[-300:]}")
-
-            try:
-                e2e = task_e2e_tests.with_options(name=f"e2e-tests-attempt-{n}")(
-                    worktree, config_dict
-                )
-            finally:
-                task_e2e_teardown.with_options(name=f"e2e-teardown-attempt-{n}")(
-                    worktree, config_dict
-                )
-
-            if not e2e.get("skipped") and not e2e["success"]:
-                if attempt < MAX_RETRY_ATTEMPTS:
-                    feedback = _fmt_test_feedback("E2E tests", e2e)
-                    tasklog.append_orchestrator(task_id, "E2E failed, looping back")
-                    continue
-                else:
-                    msg = "E2E tests failed after max retries"
-                    tasklog.append_final(task_id, "failed", msg, "(no diff)")
-                    raise RuntimeError(msg)
-
-        # Everything passed. Exit the loop.
+        # Spec ran clean.
+        completed = True
         break
 
-    else:
-        # If the for loop exhausts without break (should not reach here due to the RuntimeErrors above)
+    if not completed:
+        # Should not be reachable: the loop either breaks (success) or raises.
         raise RuntimeError("Max retries exhausted")
 
-    # 5. Preview (optional): bring up the project with the changes for review.
-    preview_info = task_preview_up(task_id, worktree, config_dict)
-
-    # 6. Done
+    # 5. Done
     diff_stat = get_diff_summary(Path(worktree["container_path"]), base_branch)
     tasklog.append_final(task_id, "done", "All gates passed", diff_stat)
 

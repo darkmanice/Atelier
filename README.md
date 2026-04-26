@@ -78,7 +78,7 @@ set by `MAX_RETRY_ATTEMPTS`.
 
 ```bash
 # 1. Clone
-git clone <url> atelier && cd atelier
+git clone https://github.com/darkmanice/Atelier && cd atelier
 
 # 2. One-shot bootstrap: auto-detects HOST_UID, HOST_GID, DOCKER_GID and
 #    generates INTERNAL_API_TOKEN. Writes everything into .env.

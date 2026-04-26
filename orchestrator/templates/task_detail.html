@@ -49,6 +49,19 @@
 
 <section class="section">
   <div class="section-head">
+    <h2 class="section-title">Pipeline</h2>
+    <span class="section-meta">{{ task.pipeline_spec | length }} step{{ '' if (task.pipeline_spec | length) == 1 else 's' }}</span>
+  </div>
+  <div class="pipeline-editor is-readonly">
+    <div class="pipeline-canvas" id="pipeline-canvas-wrap"
+         data-spec='{{ task.pipeline_spec | tojson }}'>
+      <div id="pipeline-canvas"></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
     <h2 class="section-title">Log</h2>
     <span class="section-meta">task-{{ task.task_id }}.md</span>
   </div>
@@ -168,4 +181,34 @@
   {% endif %}
 </section>
 
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  (function () {
+    const canvasEl = document.getElementById('pipeline-canvas');
+    const wrapEl = document.getElementById('pipeline-canvas-wrap');
+    if (!canvasEl || !wrapEl) return;
+
+    let spec = [];
+    try { spec = JSON.parse(wrapEl.dataset.spec || '[]') || []; } catch (e) {}
+
+    (async () => {
+      let payload;
+      try {
+        payload = await PipelineEditor.fetchBlocks();
+      } catch (err) {
+        canvasEl.innerHTML = '<div class="pipeline-canvas-error">Could not load block catalog.</div>';
+        return;
+      }
+      PipelineEditor.create({
+        canvasEl,
+        blocks: payload.blocks,
+        defaultSpec: payload.default_spec,
+        initialSpec: spec,
+        readOnly: true,
+      });
+    })();
+  })();
+</script>
 {% endblock %}

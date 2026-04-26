@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}Pipeline templates · atelier{% endblock %}
+{% block content %}
+
+<a class="back-link" href="/">← New task</a>
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title" id="editor-title">New template</h2>
+    <span class="section-meta">drag, wire, save</span>
+  </div>
+
+  <div class="panel">
+    <div class="field">
+      <label class="field-label" for="template-name">Name</label>
+      <input type="text" id="template-name" class="field-input"
+             autocomplete="off" spellcheck="false"
+             placeholder="e.g. Quick fix (no reviewer)">
+    </div>
+
+    <div class="pipeline-editor" style="margin-top: 16px;">
+      <aside class="pipeline-palette" id="pipeline-palette">
+        <h4>Blocks</h4>
+      </aside>
+      <div class="pipeline-canvas" id="pipeline-canvas-wrap">
+        <div id="pipeline-canvas"></div>
+        <div class="pipeline-canvas-empty" id="pipeline-canvas-empty">
+          Drag a block here to start
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-toolbar">
+      <button type="button" id="pipeline-reset-btn" class="btn ghost small">Default sequence</button>
+      <button type="button" id="pipeline-clear-btn" class="btn ghost small">Clear</button>
+      <span class="spacer"></span>
+      <span class="pipeline-validation" id="pipeline-validation"></span>
+    </div>
+
+    <div class="actions">
+      <span class="legend" id="template-edit-hint">
+        Templates are reusable across tasks. Pick one from the dropdown on the
+        new-task screen to load it into that task's canvas.
+      </span>
+      <span>
+        <a href="/pipeline-templates-ui" class="btn ghost" id="template-cancel-btn"
+           style="margin-right: 8px; display: none;">Cancel</a>
+        <button type="button" id="template-save-btn" class="btn">Save template</button>
+      </span>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">Saved templates</h2>
+    <span class="section-meta">{{ templates|length }} {% if templates|length == 1 %}template{% else %}templates{% endif %}</span>
+  </div>
+
+  {% if templates %}
+  <div class="panel" style="padding: 4px 16px;">
+    <table class="ledger">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th style="width: 8rem;">Steps</th>
+          <th style="width: 14rem;">Created</th>
+          <th style="width: 11rem; text-align: right;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in templates %}
+        <tr data-template-id="{{ t.id }}">
+          <td>{{ t.name }}</td>
+          <td><code>{{ t.step_count }}</code></td>
+          <td class="timestamp">{{ t.created_at[:19].replace('T', ' ') }} UTC</td>
+          <td style="text-align: right;">
+            <button type="button" class="btn ghost small" data-action="edit"
+                    data-spec='{{ t.spec | tojson }}' data-name="{{ t.name }}">Edit</button>
+            <button type="button" class="btn danger small" data-action="delete">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      No templates yet.
+      <span class="sub">Create one above and it'll show up in the new-task selector.</span>
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  (function () {
+    const canvasEl = document.getElementById('pipeline-canvas');
+    const paletteEl = document.getElementById('pipeline-palette');
+    const validationEl = document.getElementById('pipeline-validation');
+    const emptyEl = document.getElementById('pipeline-canvas-empty');
+    const resetBtn = document.getElementById('pipeline-reset-btn');
+    const clearBtn = document.getElementById('pipeline-clear-btn');
+    const nameInput = document.getElementById('template-name');
+    const saveBtn = document.getElementById('template-save-btn');
+    const cancelBtn = document.getElementById('template-cancel-btn');
+    const editorTitle = document.getElementById('editor-title');
+
+    // editingId == null → create mode. Otherwise → editing existing template.
+    let editingId = null;
+    let editor = null;
+
+    function setMode(id, name, spec) {
+      editingId = id;
+      nameInput.value = name || '';
+      if (id) {
+        editorTitle.textContent = 'Edit template';
+        saveBtn.textContent = 'Save changes';
+        cancelBtn.style.display = '';
+      } else {
+        editorTitle.textContent = 'New template';
+        saveBtn.textContent = 'Save template';
+        cancelBtn.style.display = 'none';
+      }
+      if (editor && Array.isArray(spec)) editor.loadSpec(spec);
+    }
+
+    async function init() {
+      let payload;
+      try {
+        payload = await PipelineEditor.fetchBlocks();
+      } catch (err) {
+        canvasEl.innerHTML = '<div class="pipeline-canvas-error">Could not load block catalog.</div>';
+        return;
+      }
+      editor = PipelineEditor.create({
+        canvasEl, paletteEl,
+        blocks: payload.blocks,
+        defaultSpec: payload.default_spec,
+        toolbar: { resetBtn, clearBtn, validationEl, emptyEl },
+        initialSpec: null,
+      });
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      if (!editor) return;
+      const name = nameInput.value.trim();
+      if (!name) {
+        validationEl.textContent = 'Name is required.';
+        validationEl.classList.remove('ok');
+        nameInput.focus();
+        return;
+      }
+      const result = editor.exportSpec();
+      if (!result.ok || result.spec.length === 0) {
+        validationEl.textContent = result.message || 'Add at least one block.';
+        validationEl.classList.remove('ok');
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        const url = editingId
+          ? `/pipeline-templates/${editingId}`
+          : '/pipeline-templates';
+        const method = editingId ? 'PUT' : 'POST';
+        const resp = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, spec: result.spec }),
+        });
+        if (!resp.ok) {
+          let detail = `${resp.status}`;
+          try { detail = (await resp.json()).detail || detail; } catch (e) {}
+          validationEl.textContent = `Save failed: ${detail}`;
+          validationEl.classList.remove('ok');
+          return;
+        }
+        // Reload to refresh the list.
+        window.location.href = '/pipeline-templates-ui';
+      } catch (err) {
+        validationEl.textContent = 'Network error.';
+        validationEl.classList.remove('ok');
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    cancelBtn.addEventListener('click', e => {
+      e.preventDefault();
+      setMode(null, '', []);
+      if (editor) editor.clear();
+    });
+
+    // Wire edit/delete buttons in the table.
+    document.querySelectorAll('tr[data-template-id]').forEach(row => {
+      const id = row.dataset.templateId;
+      row.querySelectorAll('button[data-action]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (btn.dataset.action === 'edit') {
+            let spec = [];
+            try { spec = JSON.parse(btn.dataset.spec || '[]'); } catch (e) {}
+            setMode(id, btn.dataset.name || '', spec);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+          }
+          if (btn.dataset.action === 'delete') {
+            if (!confirm('Delete this template?')) return;
+            const resp = await fetch(`/pipeline-templates/${id}`, { method: 'DELETE' });
+            if (resp.ok) window.location.reload();
+            else alert('Delete failed.');
+          }
+        });
+      });
+    });
+
+    init();
+  })();
+</script>
+{% endblock %}

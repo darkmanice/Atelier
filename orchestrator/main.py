@@ -8,6 +8,7 @@ object manually (which is what broke with the BaseResult bug).
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -33,6 +34,7 @@ from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
 from orchestrator.config import DEFAULT_MODEL, PROJECTS_ROOT
 from orchestrator.crypto import CryptoError, is_available as crypto_available
+from orchestrator.pipeline_templates_store import store as templates_store
 from orchestrator.providers_store import store as providers_store
 from orchestrator.secrets_store import store as secret_store
 
@@ -86,6 +88,12 @@ class TaskCreate(BaseModel):
     model_implementer: str | None = None
     model_reviewer: str | None = None
     model_simplifier: str | None = None
+
+    # Optional per-task pipeline spec — an ordered list of `{type, id}` blocks
+    # describing what runs and in what order. None = the default sequence
+    # (implementer → quick-tests → reviewer → simplifier → full-tests →
+    # e2e-tests → preview). See `BLOCK_CATALOG` for legal `type` values.
+    pipeline_spec: list[dict] | None = None
 
 
 class ProviderCreate(BaseModel):
@@ -291,6 +299,7 @@ async def create_task(payload: TaskCreate) -> TaskResponse:
         "model_reviewer": resolved.model_reviewer,
         "model_simplifier": resolved.model_simplifier,
         "secret_token": secret_token,
+        "pipeline_spec": payload.pipeline_spec,
     }
 
     # run_deployment avoids touching State manually (Prefect does it internally).
@@ -368,6 +377,44 @@ async def get_task_log(task_id: int) -> str:
     if not path.exists():
         raise HTTPException(404, f"Log for task {task_id} not found")
     return path.read_text(encoding="utf-8")
+
+
+# --- Pipeline block catalog (single source of truth for the canvas) ---
+
+# Block types the user can place on the Drawflow canvas. Structural steps
+# (worktree, load-config, install-deps, e2e-setup/teardown) are NOT exposed
+# here — `pipeline_flow` injects them automatically. `preview` carries
+# `max=1`: at most one preview block per spec.
+BLOCK_CATALOG: list[dict] = [
+    {"type": "implementer", "label": "Implementer", "kind": "agent"},
+    {"type": "reviewer",    "label": "Reviewer",    "kind": "agent"},
+    {"type": "simplifier",  "label": "Simplifier",  "kind": "agent"},
+    {"type": "quick-tests", "label": "Quick tests", "kind": "gate"},
+    {"type": "full-tests",  "label": "Full tests",  "kind": "gate"},
+    {"type": "e2e-tests",   "label": "E2E tests",   "kind": "gate"},
+    {"type": "preview",     "label": "Preview",     "kind": "preview", "max": 1},
+]
+
+ALLOWED_BLOCK_TYPES: frozenset[str] = frozenset(b["type"] for b in BLOCK_CATALOG)
+SINGLETON_BLOCK_TYPES: frozenset[str] = frozenset(
+    b["type"] for b in BLOCK_CATALOG if b.get("max") == 1
+)
+
+# Default spec used when the caller does not provide one. Mirrors the legacy
+# linear flow exactly so existing API callers (curl scripts, etc.) keep their
+# behaviour unchanged.
+DEFAULT_PIPELINE_SPEC: list[dict] = [
+    {"type": t, "id": f"default-{t}"}
+    for t in (
+        "implementer", "quick-tests", "reviewer", "simplifier",
+        "full-tests", "e2e-tests", "preview",
+    )
+]
+
+
+@app.get("/ui/pipeline/blocks")
+async def ui_pipeline_blocks() -> dict:
+    return {"blocks": BLOCK_CATALOG, "default_spec": DEFAULT_PIPELINE_SPEC}
 
 
 # --- UI helpers: selectable branches + models ---
@@ -568,6 +615,52 @@ async def delete_provider(provider_id: str) -> dict:
     return {"deleted": True}
 
 
+# --- pipeline template endpoints (CRUD for saved canvas presets) ---
+
+class PipelineTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    spec: list[dict]
+
+
+def _validate_template_spec(spec: list[dict]) -> list[dict]:
+    """
+    Same shape as the on-task spec, but rejects an empty result so the user
+    can't save an empty template by mistake. Reuses the per-task parser by
+    re-serialising — keeps the validation rules in one place.
+    """
+    cleaned = _parse_pipeline_spec(json.dumps(spec))
+    if not cleaned:
+        raise HTTPException(400, "Template must contain at least one valid block")
+    return cleaned
+
+
+@app.get("/pipeline-templates")
+async def list_pipeline_templates() -> list[dict]:
+    return [t.__dict__ for t in templates_store.list()]
+
+
+@app.post("/pipeline-templates", status_code=201)
+async def create_pipeline_template(payload: PipelineTemplateCreate) -> dict:
+    cleaned = _validate_template_spec(payload.spec)
+    return templates_store.create(name=payload.name, spec=cleaned).__dict__
+
+
+@app.put("/pipeline-templates/{template_id}")
+async def update_pipeline_template(template_id: str, payload: PipelineTemplateCreate) -> dict:
+    cleaned = _validate_template_spec(payload.spec)
+    updated = templates_store.update(template_id, payload.name, cleaned)
+    if updated is None:
+        raise HTTPException(404, "Template not found")
+    return updated.__dict__
+
+
+@app.delete("/pipeline-templates/{template_id}")
+async def delete_pipeline_template(template_id: str) -> dict:
+    if not templates_store.delete(template_id):
+        raise HTTPException(404, "Template not found")
+    return {"deleted": True}
+
+
 # --- preview endpoints ---
 
 async def _task_id_from_flow_run(flow_run_id: str) -> int:
@@ -704,6 +797,7 @@ async def dashboard(request: Request):
             p["flow_run_id"] = by_task_id[p["task_id"]]
 
     providers = providers_store.list() if crypto_available() else []
+    pipeline_templates = templates_store.list()
 
     return templates.TemplateResponse("index.html", {
         "request": request,
@@ -712,6 +806,7 @@ async def dashboard(request: Request):
         "default_model": DEFAULT_MODEL,
         "providers": providers,
         "crypto_available": crypto_available(),
+        "pipeline_templates": pipeline_templates,
     })
 
 
@@ -723,6 +818,63 @@ async def dashboard_tasks_partial(request: Request):
     return templates.TemplateResponse("_tasks_list.html", {
         "request": request, "tasks": tasks,
     })
+
+
+def _sanitize_spec_for_render(raw: object) -> list[dict]:
+    """
+    Cleans a stored spec for read-only rendering. Stale `type` values silently
+    dropped. Returns the default spec when the input is None / empty so the
+    task-detail canvas always has something to draw.
+    """
+    if not isinstance(raw, list) or not raw:
+        return list(DEFAULT_PIPELINE_SPEC)
+    out: list[dict] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t not in ALLOWED_BLOCK_TYPES:
+            continue
+        rid = item.get("id")
+        sid = rid if isinstance(rid, str) and rid else f"{t}-{idx}"
+        out.append({"type": t, "id": sid})
+    return out or list(DEFAULT_PIPELINE_SPEC)
+
+
+def _parse_pipeline_spec(raw: str) -> list[dict] | None:
+    """
+    Form sends a JSON list. Empty / malformed / containing nothing valid →
+    None (= run the default spec). Unknown block types silently dropped.
+    Singleton types (currently only `preview`) capped at 1 occurrence.
+    Each surviving step keeps a stable `id` (defaults to `<type>-<index>`
+    if the client did not provide one).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+
+    cleaned: list[dict] = []
+    seen_singletons: set[str] = set()
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t not in ALLOWED_BLOCK_TYPES:
+            continue
+        if t in SINGLETON_BLOCK_TYPES:
+            if t in seen_singletons:
+                continue
+            seen_singletons.add(t)
+        raw_id = item.get("id")
+        step_id = (raw_id if isinstance(raw_id, str) and raw_id else f"{t}-{idx}")
+        cleaned.append({"type": t, "id": step_id})
+    return cleaned or None
 
 
 @app.post("/ui/tasks")
@@ -738,6 +890,7 @@ async def dashboard_create(
     model_implementer: str = Form(""),
     model_reviewer: str = Form(""),
     model_simplifier: str = Form(""),
+    pipeline_spec: str = Form(""),
 ):
     resp = await create_task(TaskCreate(
         prompt=prompt,
@@ -751,6 +904,7 @@ async def dashboard_create(
         model_implementer=model_implementer or None,
         model_reviewer=model_reviewer or None,
         model_simplifier=model_simplifier or None,
+        pipeline_spec=_parse_pipeline_spec(pipeline_spec),
     ))
     return RedirectResponse(url=f"/ui/tasks/{resp.id}", status_code=303)
 
@@ -863,6 +1017,19 @@ async def ui_providers_delete(provider_id: str):
     return RedirectResponse(url="/providers-ui", status_code=303)
 
 
+# --- pipeline templates UI page ---
+
+@app.get("/pipeline-templates-ui", response_class=HTMLResponse)
+async def pipeline_templates_page(request: Request):
+    """Page for managing canvas presets. The Drawflow editor on this page is
+    JS-driven and POSTs JSON to /pipeline-templates — no Form-style endpoints
+    needed."""
+    return templates.TemplateResponse("pipeline_templates.html", {
+        "request": request,
+        "templates": templates_store.list(),
+    })
+
+
 _LOG_ISO_RE = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?")
 
 
@@ -912,6 +1079,10 @@ async def dashboard_task_detail(request: Request, flow_run_id: str):
         "model": params.get("model"),
         "ui_url": run.get("ui_url"),
         "created": _fmt_iso_utc(run.get("start_time")),
+        # Per-task spec actually used for this run (falls back to the default
+        # spec when the caller did not provide one). Filtered against the
+        # block catalog so stale data can't poison the canvas.
+        "pipeline_spec": _sanitize_spec_for_render(params.get("pipeline_spec")),
     }
     return templates.TemplateResponse("task_detail.html", {
         "request": request,
