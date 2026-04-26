@@ -2,9 +2,10 @@
 #
 # Services:
 #   - prefect-server: Prefect UI + API on :4200
-#   - prefect-worker: runs the flows (your orchestration code)
+#   - prefect-worker: runs the flows. Embeds the OpenHands V1 SDK so
+#                     LLM-driven phases run in-process — no per-task
+#                     agent containers.
 #   - orchestrator:   FastAPI on :8000, dispatches Prefect deployments
-#   - agent-builder:  builds the agent image (one-shot)
 #   - runner-quick-builder: builds the quick/full runner image (one-shot)
 #   - runner-e2e-builder:   builds the E2E runner image (one-shot)
 
@@ -56,8 +57,6 @@ services:
     depends_on:
       prefect-server:
         condition: service_healthy
-      agent-builder:
-        condition: service_completed_successfully
       runner-quick-builder:
         condition: service_completed_successfully
       runner-e2e-builder:
@@ -80,16 +79,18 @@ services:
       - WORKTREES_DIR=${PWD}/worktrees
       - PROJECTS_ROOT=${PWD}/projects
       - LOGS_DIR=${PWD}/logs
-      - AGENT_IMAGE=atelier-agent:latest
+      # Used by the ephemeral runner containers (test gates). Kept under
+      # the AGENT_* names because the worker's runner code reads them
+      # via orchestrator.config; renaming to RUNNER_* would be a larger
+      # cleanup orthogonal to v2 and is left for later.
       - AGENT_NETWORK=atelier_network
       - AGENT_UID=${HOST_UID:-1000}
       - AGENT_GID=${HOST_GID:-1000}
       - AGENT_MEM_LIMIT=${AGENT_MEM_LIMIT:-4g}
       - AGENT_CPU_LIMIT=${AGENT_CPU_LIMIT:-2.0}
-      - AGENT_TIMEOUT_SEC=${AGENT_TIMEOUT_SEC:-2400}
-      # Aider edit-format. `diff` (default) = SEARCH/REPLACE, `whole` = full
-      # file rewrites (more forgiving with weak models), `udiff` = unified diff.
-      - AIDER_EDIT_FORMAT=${AIDER_EDIT_FORMAT:-diff}
+      # OpenHands SDK iteration cap. Each iteration ≈ one LLM call +
+      # one tool execution; with a slow local model this caps wall-clock.
+      - OPENHANDS_MAX_ITERATIONS=${OPENHANDS_MAX_ITERATIONS:-30}
       - RUNNER_QUICK_IMAGE=atelier-runner-quick:latest
       - RUNNER_E2E_IMAGE=atelier-runner-e2e:latest
       # Shared secret for the internal /internal/consume-secret endpoint.
@@ -145,21 +146,6 @@ services:
       - MASTER_ENCRYPTION_KEY=${MASTER_ENCRYPTION_KEY:-}
     networks:
       - pipeline
-
-  # -------------------------------------------------------------
-  # Agent-builder: builds the agent image and exits.
-  # -------------------------------------------------------------
-  agent-builder:
-    build:
-      context: .
-      dockerfile: docker/agent.Dockerfile
-      args:
-        HOST_UID: ${HOST_UID:-1000}
-        HOST_GID: ${HOST_GID:-1000}
-    image: atelier-agent:latest
-    container_name: atelier-agent-builder
-    entrypoint: ["true"]
-    restart: "no"
 
   # -------------------------------------------------------------
   # Runner-quick-builder: builds the runner image for unit/full tests.

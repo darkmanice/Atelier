@@ -56,12 +56,12 @@ DEFAULT_MODEL = os.environ["DEFAULT_MODEL"]
 AGENT_UID = int(os.environ.get("AGENT_UID", "1000"))
 AGENT_GID = int(os.environ.get("AGENT_GID", "1000"))
 
-# --- Docker (for launching agents) ---
-AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "atelier-agent:latest")
+# --- Docker (for launching ephemeral test runners) ---
+# These keep the AGENT_* names because the runner code reads them via
+# this module; renaming to RUNNER_* is a separate cleanup.
 AGENT_NETWORK = os.environ.get("AGENT_NETWORK", "atelier_network")
 AGENT_MEM_LIMIT = os.environ.get("AGENT_MEM_LIMIT", "4g")
 AGENT_CPU_LIMIT = float(os.environ.get("AGENT_CPU_LIMIT", "2.0"))
-AGENT_TIMEOUT_SEC = int(os.environ.get("AGENT_TIMEOUT_SEC", "2400"))
 
 # --- FSM ---
 MAX_REVIEW_ITERATIONS = int(os.environ.get("MAX_REVIEW_ITERATIONS", "3"))

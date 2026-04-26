@@ -1,6 +1,0 @@
-# openai pin viene marcado por aider-chat 0.86.2 (==2.20.0).
-# Si subes aider, sube aquí también para que pip no rechace el resolve.
-openai==2.20.0
-aider-chat==0.86.2
-pydantic>=2.11,<3
-pyyaml>=6

@@ -3,7 +3,7 @@ Secret handoff worker -> orchestrator (inside the flow).
 
 The flow calls `fetch_api_key(secret_token)` once at startup. The resulting
 key lives only in the flow stack during execution and is passed as an
-argument to each `run_agent` invocation without being persisted to disk.
+argument to each OpenHands session call without being persisted to disk.
 """
 from __future__ import annotations
 

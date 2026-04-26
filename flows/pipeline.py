@@ -31,7 +31,6 @@ from agents.openhands_session import run as run_openhands_session
 from orchestrator import logger as tasklog
 from orchestrator import preview as preview_state
 from orchestrator.config import DEFAULT_MODEL
-from orchestrator.container import cleanup_task_containers
 from orchestrator.llm_config import fetch_api_key
 from orchestrator.runner import (
     RUNNER_E2E_IMAGE,
@@ -447,11 +446,9 @@ def pipeline_flow(
         "api_key": api_key,
     }
 
-    # V2: there are no per-task agent containers anymore — the
-    # OpenHands SDK runs in-process inside this worker. `cleanup-task`
-    # is still wired (it tears down the preview); the
-    # `cleanup_task_containers` call inside it is harmless because no
-    # containers carry the `atelier.task` label in V2.
+    # V2: there are no per-task agent containers anymore — OpenHands
+    # runs in-process inside this worker. `cleanup-task` only has to
+    # tear down the preview now.
 
     # 1. Worktree (always — structural, hidden from the canvas)
     worktree = task_create_worktree(task_id, repo_path, base_branch, feature_branch)
@@ -623,18 +620,15 @@ def pipeline_flow(
 @flow(name="cleanup-task", log_prints=True)
 def cleanup_task_flow(task_id: int) -> dict:
     """
-    Triggered by `DELETE /tasks/{flow_run_id}`. Runs on the worker (which is
-    the one with the Docker socket and the worktree mount) and:
-      1. Tears down the preview if one is active.
-      2. Removes every container labeled `atelier.task=<task_id>` (agent
-         containers from the pipeline run).
+    Triggered by `DELETE /tasks/{flow_run_id}`. Runs on the worker
+    (which has the Docker socket and the worktree mount) and tears
+    down the preview if one is active.
 
-    The worktree directory and the markdown task log are intentionally kept;
-    deletion here is about freeing live resources (containers, ports).
+    The worktree directory and the markdown task log are intentionally
+    kept; deletion here is about freeing live resources (preview port).
     """
     logger = get_run_logger()
 
-    # 1. Preview (best-effort).
     preview_torn_down = False
     state = preview_state.load_sidecar(task_id)
     if state is not None:
@@ -654,16 +648,11 @@ def cleanup_task_flow(task_id: int) -> dict:
         finally:
             preview_state.delete_sidecar(task_id)
 
-    # 2. Containers.
-    removed = cleanup_task_containers(task_id)
-    logger.info(f"Removed {removed} agent container(s) for task {task_id}")
-
     tasklog.append_orchestrator(
         task_id,
-        f"Task deleted (containers removed={removed}, preview torn down={preview_torn_down})",
+        f"Task deleted (preview torn down={preview_torn_down})",
     )
     return {
         "task_id": task_id,
-        "containers_removed": removed,
         "preview_torn_down": preview_torn_down,
     }
