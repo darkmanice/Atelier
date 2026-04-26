@@ -43,13 +43,15 @@ There are no unit tests in this repo; the "tests" are full pipeline runs against
 
 `prefect-worker` runs the flow code, but the per-agent and per-test work happens inside **separately-built images** (`atelier-agent`, `atelier-runner-quick`, `atelier-runner-e2e`) that the worker launches via `/var/run/docker.sock` mounted from the host. The `*-builder` services in `docker-compose.yml` exist only to build these images at `compose up` — they run `entrypoint: ["true"]` and exit immediately; the worker's `depends_on: service_completed_successfully` gates on them. Do not add runtime commands to those builder services.
 
-### Host/container path dualism
+### Path-aliased mounts (no host/container duality)
 
-Because the worker launches containers on the host's Docker daemon, every bind-mounted path needs BOTH:
-- the path as the worker sees it (e.g. `/app/worktrees/task-42`)
-- the path as the host sees it (e.g. `/home/user/pipelines/.../worktrees/task-42`)
+`projects/`, `worktrees/`, `logs/` and `data/` are bind-mounted at the **same absolute path** inside every container as on the host (e.g. `/home/me/atelier/worktrees/task-42` resolves identically from the host shell, the worker, and the agent containers). This means:
 
-`orchestrator/config.py` exposes both via `container_path_for_worktree()` / `host_path_for_worktree()`. `WorktreeHandle` carries both. When launching an agent or runner, pass the **host** path as the volume source and the **container** path for any git/python operations the worker itself does. Passing the wrong one silently mounts nothing useful.
+- Anything `git worktree add` writes (the `.git` pointer files) resolves from both sides — the user can `cd worktrees/task-X && git log/diff/commit` from their host shell with no indirection.
+- The worker passes the same path as both the volume source and the container target when spawning agent/runner containers (see `orchestrator/container.py` and `orchestrator/runner.py`).
+- The translator helpers in `orchestrator/config.py` (`container_path_for_worktree` / `host_path_for_worktree` / `host_path_for_project`) are kept as identity functions for code clarity at call sites that historically distinguished host vs container paths.
+
+This setup assumes `docker compose` is run from the repo root so `${PWD}` substitution in `docker-compose.yml` produces the right paths. `scripts/setup.sh` already enforces this.
 
 ### The pipeline flow and its retry loop (`flows/pipeline.py`)
 
@@ -75,7 +77,7 @@ The config that drives test gates (`install`, `quick_tests`, `full_tests`, `e2e_
 
 - **Ollama host URL**: the pipeline talks to Ollama running on the Windows host, not in compose. `OLLAMA_EXTERNAL_URL` in `.env` must match the WSL→Windows gateway (`ip route show | grep -i default | awk '{ print $3 }'`) and can drift between reboots.
 - **HOST_UID/HOST_GID**: all containers (worker, orchestrator, agent, runners) run with the host user's UID/GID (baked at build time via `ARG HOST_UID/HOST_GID`, and enforced at runtime via `user:` in compose and `user=` in `containers.create()`). `scripts/setup.sh` auto-fills these in `.env`. The worker gets the docker socket via `group_add: [${DOCKER_GID}]`. If you change `HOST_UID`/`HOST_GID`, you must rebuild the images.
-- **Repo path sandbox**: `orchestrator/main.py::_resolve_repo_path` hard-requires the resolved path to be under `/projects` and contain `.git`. Don't add knobs to bypass this.
+- **Repo path sandbox**: `orchestrator/main.py::_resolve_repo_path` hard-requires the resolved path to be under `PROJECTS_ROOT` (host's `${PWD}/projects` by default) and contain `.git`. Don't add knobs to bypass this.
 - **`runner-bundle/` directory**: this is a standalone "addon package" with its own README — a drop-in bundle showing what was added to bring test gates into the project. The canonical copies of those files already live in `orchestrator/`, `flows/`, `agents/`, `docker/`; edit those, not the bundle.
 - **Empty branch reuse**: `create_worktree` force-deletes a pre-existing feature branch (`git branch -D`) before recreating the worktree. Tasks are treated as ephemeral — don't assume the branch from a previous run survives.
 - **The `from prefect import flow` import at the very top of `orchestrator/main.py`** is a workaround for a Prefect 3 circular-import bug; don't "tidy" it down into the rest of the imports.

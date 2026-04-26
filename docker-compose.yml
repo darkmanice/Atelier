@@ -64,26 +64,22 @@ services:
         condition: service_completed_successfully
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./worktrees:/app/worktrees
-      # Extra bind mount: the worker needs the HOST worktrees path to also
-      # be valid INSIDE the container so that `subprocess.run(cwd=host_path)`
-      # in services.py works (used by e2e_setup/teardown and preview_up).
-      - ${WORKTREES_HOST_DIR:-${PWD}/worktrees}:${WORKTREES_HOST_DIR:-${PWD}/worktrees}
-      - ./logs:/app/logs
-      - ./projects:/projects
+      # Path-aliased mounts: same absolute path on host and inside the
+      # worker. This way `git worktree add` writes paths that resolve
+      # from BOTH sides — users can run `git log/diff/commit` straight
+      # from `worktrees/task-X/` on their host shell.
+      - ${PWD}/worktrees:${PWD}/worktrees
+      - ${PWD}/projects:${PWD}/projects
+      - ${PWD}/logs:${PWD}/logs
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
       - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS:-2}
       - MAX_RETRY_ATTEMPTS=${MAX_RETRY_ATTEMPTS:-2}
       - APP_ROOT=/app
-      - WORKTREES_DIR=/app/worktrees
-      - LOGS_DIR=/app/logs
-      - WORKTREES_HOST_DIR=${WORKTREES_HOST_DIR:-${PWD}/worktrees}
-      # Host-side path that backs /projects. Auto-derived from compose's PWD
-      # so the worker can hand the correct absolute path to `docker run` when
-      # it spawns per-project mounts for agent/runner containers.
-      - PROJECTS_HOST_DIR=${PWD}/projects
+      - WORKTREES_DIR=${PWD}/worktrees
+      - PROJECTS_ROOT=${PWD}/projects
+      - LOGS_DIR=${PWD}/logs
       - AGENT_IMAGE=atelier-agent:latest
       - AGENT_NETWORK=atelier_network
       - AGENT_UID=${HOST_UID:-1000}
@@ -130,19 +126,21 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./projects:/projects
+      # Path-aliased: same absolute path on host and inside the
+      # orchestrator. See the worker for the rationale.
+      - ${PWD}/logs:${PWD}/logs
+      - ${PWD}/data:${PWD}/data
+      - ${PWD}/projects:${PWD}/projects
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DEFAULT_MODEL=${DEFAULT_MODEL:?DEFAULT_MODEL must be set in .env}
       - DEPLOYMENT_NAME=atelier/default
-      - LOGS_DIR=/app/logs
-      - DATA_DIR=/app/data
+      - APP_ROOT=/app
+      - LOGS_DIR=${PWD}/logs
+      - DATA_DIR=${PWD}/data
+      - PROJECTS_ROOT=${PWD}/projects
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set in .env}
-      # Same host-side path as the worker — shared config module reads it.
-      - PROJECTS_HOST_DIR=${PWD}/projects
-      # Master key used to encrypt stored API keys in /app/data/providers.json.
+      # Master key used to encrypt stored API keys in data/providers.json.
       # Empty = "stored providers" feature disabled (one-shot flow still works).
       - MASTER_ENCRYPTION_KEY=${MASTER_ENCRYPTION_KEY:-}
     networks:

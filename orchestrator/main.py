@@ -67,7 +67,7 @@ if not INTERNAL_TOKEN:
 
 class TaskCreate(BaseModel):
     prompt: str = Field(min_length=5)
-    repo_path: str = Field(description="Path relative to /projects or absolute.")
+    repo_path: str = Field(description="Path relative to PROJECTS_ROOT or absolute.")
     base_branch: str = "main"
     feature_branch: str | None = None
 
@@ -479,7 +479,7 @@ async def ui_branches(repo_path: str = "", selected: str | None = None) -> str:
 
 
 def _list_git_repos() -> list[str]:
-    """Git repos under /projects (recursive, no limit). Paths relative to /projects."""
+    """Git repos under PROJECTS_ROOT (recursive, no limit). Paths relative to PROJECTS_ROOT."""
     if not PROJECTS_ROOT.is_dir():
         return []
     found: list[str] = []
@@ -506,7 +506,7 @@ def _list_git_repos() -> list[str]:
 async def ui_repos(selected: str | None = None) -> str:
     repos = _list_git_repos()
     default = selected if selected in repos else _pick_default(repos, [])
-    return _options_html(repos, default, empty_label="(no repos in /projects)")
+    return _options_html(repos, default, empty_label="(no repos under PROJECTS_ROOT)")
 
 
 class ModelsProbeRequest(BaseModel):

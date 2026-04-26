@@ -92,10 +92,11 @@ def run_command_in_runner(
     Args:
         image: Runner image.
         command: Full shell command (passed to `sh -c`).
-        host_worktree_path: Path of the worktree ON THE HOST (for bind mount).
-        container_repo_path: Path of the target project as the worker sees it
-            (e.g. /projects/<name>). Only this single project is mounted into
-            the runner — siblings under /projects are invisible.
+        host_worktree_path: Absolute path of the worktree (identical on
+            host and inside the runner thanks to path-aliased mounts).
+        container_repo_path: Absolute path of the target project. Only
+            this single project is mounted into the runner — siblings
+            under PROJECTS_ROOT are invisible.
         feature_branch: Branch the task is allowed to modify. Any other ref
             change detected after the runner exits marks the run as failed.
         timeout_sec: Hard timeout.
@@ -118,9 +119,12 @@ def run_command_in_runner(
 
     host_project_path = host_path_for_project(container_repo_path)
 
+    # Path-aliased: mount worktree and project at the SAME absolute path
+    # inside as on host, so paths embedded in `.git`/lockfiles/etc.
+    # resolve identically from both sides.
     volumes: dict = {
-        str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
-        str(host_project_path): {"bind": str(container_repo_path), "mode": "rw"},
+        str(host_worktree_path): {"bind": str(host_worktree_path), "mode": "rw"},
+        str(host_project_path): {"bind": str(host_project_path), "mode": "rw"},
     }
     if mount_docker_socket:
         volumes["/var/run/docker.sock"] = {
@@ -136,7 +140,7 @@ def run_command_in_runner(
         user=f"{AGENT_UID}:{AGENT_GID}",
         environment=env,
         volumes=volumes,
-        working_dir="/workspace",
+        working_dir=str(host_worktree_path),
         mem_limit=AGENT_MEM_LIMIT,
         nano_cpus=int(AGENT_CPU_LIMIT * 1_000_000_000),
         network=AGENT_NETWORK,

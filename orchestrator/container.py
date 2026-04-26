@@ -81,11 +81,15 @@ def _ensure_agent_container(
             "atelier.task": str(task_id),
             "atelier.role": role_value,
         },
+        # Path-aliased: bind worktree and project at the SAME absolute
+        # path inside as on host. `.git` pointers and any other
+        # absolute path written into files thus resolve identically
+        # from the host and from the container.
         volumes={
-            str(host_worktree_path): {"bind": "/workspace", "mode": "rw"},
-            str(host_project_path): {"bind": str(container_repo_path), "mode": "rw"},
+            str(host_worktree_path): {"bind": str(host_worktree_path), "mode": "rw"},
+            str(host_project_path): {"bind": str(host_project_path), "mode": "rw"},
         },
-        working_dir="/workspace",
+        working_dir=str(host_worktree_path),
         mem_limit=AGENT_MEM_LIMIT,
         nano_cpus=int(AGENT_CPU_LIMIT * 1_000_000_000),
         network=AGENT_NETWORK,
@@ -106,11 +110,12 @@ def _exec_with_timeout(
     way to cancel a single in-flight exec.
     """
     api = _client.api
+    workdir = environment.get("WORKSPACE") or container.attrs.get("Config", {}).get("WorkingDir") or "/"
     exec_id = api.exec_create(
         container.id,
         cmd=cmd,
         environment=environment,
-        workdir="/workspace",
+        workdir=workdir,
         user=f"{AGENT_UID}:{AGENT_GID}",
     )["Id"]
 
@@ -175,9 +180,10 @@ def run_agent(
         container_repo_path=container_repo_path,
     )
 
-    # Write input to a file inside the worktree (visible from the agent at /workspace)
+    # Write input to a file inside the worktree. With path-aliased mounts
+    # the same absolute path is visible to both the worker and the agent.
     # NOTE: `api_key` NEVER goes into task_input; it is injected separately as an env var.
-    input_file = container_worktree_path / ".task-input.json"
+    input_file = host_worktree_path / ".task-input.json"
     input_file.write_text(task_input.model_dump_json(), encoding="utf-8")
     os.chmod(input_file, 0o644)
     # The worker writes it as root; the agent runs as UID 1000 and must
@@ -202,7 +208,8 @@ def run_agent(
     env = {
         "AGENT_ROLE": task_input.role.value,
         "TASK_ID": str(task_input.task_id),
-        "TASK_INPUT_FILE": "/workspace/.task-input.json",
+        "WORKSPACE": str(host_worktree_path),
+        "TASK_INPUT_FILE": str(host_worktree_path / ".task-input.json"),
         "OPENAI_API_BASE": task_input.base_url,
         "OPENAI_API_KEY": api_key or "sk-no-auth",
     }

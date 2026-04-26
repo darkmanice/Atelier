@@ -1,6 +1,7 @@
 """
-Container entrypoint. Reads TaskInput from /workspace/.task-input.json,
-decides which role to run, emits AgentResult via stdout.
+Container entrypoint. Reads TaskInput from the path the worker injected
+via `TASK_INPUT_FILE` (always set), decides which role to run, emits
+AgentResult via stdout.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from pathlib import Path
 from agents.models import AgentResult, AgentRole, LogEntry, TaskInput
 
 
-INPUT_FILE = Path(os.environ.get("TASK_INPUT_FILE", "/workspace/.task-input.json"))
+INPUT_FILE = Path(os.environ["TASK_INPUT_FILE"])
 
 
 def main() -> int:

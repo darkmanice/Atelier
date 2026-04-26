@@ -63,11 +63,12 @@ def task_create_worktree(
         base_branch=base_branch,
         feature_branch=feature_branch,
     )
+    # `container_path`, `host_path` and `repo_container_path` keep their
+    # historical names but with path-aliased mounts they all resolve to
+    # the SAME absolute path on disk (no host/container translation).
     return {
         "container_path": str(handle.container_path),
         "host_path": str(handle.host_path),
-        # Repo path as the worker sees it (e.g. /projects/foo). Carried in
-        # the dict so runner/agent containers can mount ONLY this project.
         "repo_container_path": str(repo_path),
         # Branch the task is allowed to modify. Used by the ref sandbox to
         # reject destructive operations on any other ref.
@@ -92,7 +93,7 @@ def _run_agent_task(
         task_id=task_id,
         role=role,
         prompt=prompt,
-        worktree_path="/workspace",
+        worktree_path=worktree["host_path"],
         base_branch=base_branch,
         feature_branch=feature_branch,
         previous_feedback=previous_feedback,

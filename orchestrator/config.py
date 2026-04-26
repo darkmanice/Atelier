@@ -1,29 +1,47 @@
-"""Central configuration (host/container duality for bind-mounts)."""
+"""Central configuration.
+
+Path-aliased bind mounts: every container mounts `projects/`, `worktrees/`,
+`logs/` and `data/` at the host's absolute path (e.g.
+`/home/me/atelier/worktrees/task-X`), not at a container-relative alias
+like `/workspace` or `/projects`. As a result, paths are identical on
+the host and inside containers, and there is no host/container duality
+to translate.
+
+The translator helpers below (`host_path_for_project`,
+`host_path_for_worktree`, `container_path_for_worktree`) are kept as
+identity functions so existing call sites don't have to change. They
+still serve as documentation of "what a path semantically is".
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
 
-# --- Paths inside the container ---
+# --- Paths (identical on host and inside containers) ---
 PROJECT_ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).parent.parent)).resolve()
 WORKTREES_DIR = Path(os.environ.get("WORKTREES_DIR", PROJECT_ROOT / "worktrees")).resolve()
 LOGS_DIR = Path(os.environ.get("LOGS_DIR", PROJECT_ROOT / "logs")).resolve()
-# Root of the target-repos bind mount inside the worker/orchestrator container.
-PROJECTS_ROOT = Path("/projects")
-
-# --- HOST paths (for bind-mounts in agent containers) ---
-WORKTREES_DIR_HOST = Path(
-    os.environ.get("WORKTREES_HOST_DIR", str(WORKTREES_DIR))
-).resolve()
-PROJECTS_DIR_HOST = Path(os.environ["PROJECTS_HOST_DIR"]).resolve()
+PROJECTS_ROOT = Path(os.environ.get("PROJECTS_ROOT", PROJECT_ROOT / "projects")).resolve()
 
 
-def host_path_for_project(container_repo_path: Path) -> Path:
-    """Translate a container-side project path (e.g. /projects/foo) into the
-    host-side equivalent (e.g. /home/user/dev/foo)."""
-    rel = Path(container_repo_path).resolve().relative_to(PROJECTS_ROOT)
-    return (PROJECTS_DIR_HOST / rel).resolve()
+def worktree_path(task_id: int) -> Path:
+    """Absolute path of the worktree for `task_id`. Identical on host
+    and inside containers thanks to path-aliased bind mounts."""
+    return WORKTREES_DIR / f"task-{task_id}"
+
+
+# Identity aliases kept for clarity at call sites that historically
+# distinguished host vs container paths. They all resolve to the same
+# absolute path on disk.
+container_path_for_worktree = worktree_path
+host_path_for_worktree = worktree_path
+
+
+def host_path_for_project(repo_path: Path) -> Path:
+    """Identity: a project path is the same on host and in containers."""
+    return Path(repo_path).resolve()
+
 
 # --- LLM default ---
 # Informational only: the real model is chosen by the user per task from
@@ -47,11 +65,3 @@ AGENT_TIMEOUT_SEC = int(os.environ.get("AGENT_TIMEOUT_SEC", "2400"))
 
 # --- FSM ---
 MAX_REVIEW_ITERATIONS = int(os.environ.get("MAX_REVIEW_ITERATIONS", "3"))
-
-
-def container_path_for_worktree(task_id: int) -> Path:
-    return WORKTREES_DIR / f"task-{task_id}"
-
-
-def host_path_for_worktree(task_id: int) -> Path:
-    return WORKTREES_DIR_HOST / f"task-{task_id}"
