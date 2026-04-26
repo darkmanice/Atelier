@@ -1,76 +1,96 @@
 # Atelier
 
-> This is a personal project to learn how to orchestrate multi-agent
-> pipelines: agent roles, test gates as deterministic control, retry loops
-> with feedback, and ephemeral compute per task.
+> This is a personal project to learn how to orchestrate autonomous coding
+> agents end-to-end: a single iterating LLM session, deterministic test
+> gates as control, retry loops with feedback, and ephemeral compute per
+> task.
 
-Multi-agent code-modification pipeline orchestrated with Prefect 3. It takes a
-task (prompt + target repo), launches specialized AI agents (`implementer` →
-`reviewer` → `simplifier`) in ephemeral Docker containers, runs deterministic
-test gates between phases, and produces a branch with the changes ready for
-human review.
+Code-modification pipeline orchestrated with Prefect 3. It takes a task
+(prompt + target repo), runs an autonomous **OpenHands V1** session against
+the worktree, runs deterministic test gates, optionally a focused
+simplification pass, and produces a branch with the changes ready for human
+review.
 
-- **Prefect UI** at `http://localhost:4200` with per-run timeline, logs, and
+- **Prefect UI** at `http://localhost:4200` with per-run timeline, logs and
   retries.
 - **FastAPI** at `http://localhost:8000` with its own UI and REST API.
 - **Per-task markdown log** at `logs/task-<id>.md`.
-- **Automatic retries**: any failed test gate or a `changes_requested` verdict
-  from the reviewer loops the pipeline back with feedback.
+- **Per-task event stream** at `logs/task-<id>.events.jsonl` (raw OpenHands
+  events from every session of the task — useful for debugging).
+- **Automatic retries**: any failed test gate loops the pipeline back to a
+  fresh OpenHands session with the test output as feedback.
 
 ---
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│ docker compose (atelier_network)                      │
-│                                                       │
-│  ┌──────────────┐  ┌──────────────┐                   │
-│  │ prefect-     │  │ orchestrator │  FastAPI :8000    │
-│  │ server :4200 │◄─┤  (FastAPI)   │  UI + API         │
-│  │  UI + API    │  └──────────────┘                   │
-│  └──────▲───────┘                                     │
-│         │                                             │
-│  ┌──────┴───────┐                                     │
-│  │ prefect-     │  ← runs the flows                   │
-│  │ worker       │  ← launches ephemeral containers    │
-│  │              │    via /var/run/docker.sock         │
-│  └──────┬───────┘                                     │
-│         │                                             │
-│         ▼ docker run --rm                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │ atelier-     │  │ atelier-     │  │ atelier-     │ │
-│  │ agent        │  │ runner-quick │  │ runner-e2e   │ │
-│  │ (ephemeral)  │  │ (tests)      │  │ (Playwright) │ │
-│  └──────────────┘  └──────────────┘  └──────────────┘ │
-└───────────────────────────────────────────────────────┘
-              │                             ▲
-              ▼                             │
-      ┌──────────────┐               ┌──────────────┐
-      │ LLM provider │               │ Target repo  │
-      │ (Ollama,     │               │ (bind mount  │
-      │  NIM, OAI…)  │               │  ./projects/)   │
-      └──────────────┘               └──────────────┘
+┌──────────────────────────────────────────────────────┐
+│ docker compose (atelier_network)                     │
+│                                                      │
+│  ┌──────────────┐  ┌──────────────┐                  │
+│  │ prefect-     │  │ orchestrator │  FastAPI :8000   │
+│  │ server :4200 │◄─┤  (FastAPI)   │  UI + API        │
+│  │  UI + API    │  └──────────────┘                  │
+│  └──────▲───────┘                                    │
+│         │                                            │
+│  ┌──────┴──────────────────────────────────────┐     │
+│  │ prefect-worker                              │     │
+│  │   • runs the Prefect flow                   │     │
+│  │   • embeds the OpenHands V1 SDK             │     │
+│  │   • spawns ephemeral runner containers      │     │
+│  │     via /var/run/docker.sock                │     │
+│  └──────┬──────────────────────────────────────┘     │
+│         │                                            │
+│         ▼ docker run --rm                            │
+│              ┌──────────────┐  ┌──────────────┐      │
+│              │ atelier-     │  │ atelier-     │      │
+│              │ runner-quick │  │ runner-e2e   │      │
+│              │ (tests)      │  │ (Playwright) │      │
+│              └──────────────┘  └──────────────┘      │
+└──────────────────────────────────────────────────────┘
+              │                            ▲
+              ▼                            │
+      ┌──────────────┐              ┌──────────────┐
+      │ LLM provider │              │ Target repo  │
+      │ (Ollama,     │              │ (bind mount  │
+      │  NIM, OAI…)  │              │  ./projects/)│
+      └──────────────┘              └──────────────┘
 ```
+
+Note: there are **no per-task agent containers**. The OpenHands SDK runs
+in-process inside the Prefect worker (`runtime=local`). Sandboxing comes from
+`branch_guard` (refs snapshot before/after) plus the path-aliased worktree.
 
 ### Flow phases
 
-`create-worktree → load-config → install-deps → implementer → quick-tests →
-reviewer → simplifier → full-tests → e2e-setup → e2e-tests → e2e-teardown`
+Default linear flow:
 
-There are three **deterministic gates** (`quick-tests`, `full-tests`,
-`e2e-tests`) plus the reviewer's verdict. Any of the four can loop the
-pipeline back to the `implementer` with `previous_feedback`. The retry cap is
-set by `MAX_RETRY_ATTEMPTS`.
+```
+create-worktree → load-config → install-deps →
+  agent-session → quick-tests → full-tests →
+  e2e-setup → e2e-tests → e2e-teardown → preview
+```
+
+Three **deterministic gates** (`quick-tests`, `full-tests`, `e2e-tests`) loop
+the pipeline back to `agent-session` with `previous_feedback`. The retry cap
+is set by `MAX_RETRY_ATTEMPTS`. The user can also opt in to a `simplify-pass`
+block via the canvas in the UI for a focused cleanup run after the gates
+pass.
+
+There is no separate reviewer phase — the OpenHands session iterates
+internally to self-correct.
 
 ---
 
 ## Prerequisites
 
 - **Docker** + **Docker Compose v2** (`docker compose`, not `docker-compose`).
-- An **OpenAI-compatible LLM provider**. Built-in presets: Ollama,
-  NVIDIA NIM, OpenAI, OpenRouter.... Any endpoint that speaks
-  `POST /v1/chat/completions` works.
+- An **OpenAI-compatible LLM provider** with **tool-calling support**.
+  Built-in presets: Ollama (local), NVIDIA NIM, OpenAI, OpenRouter. Any
+  endpoint that speaks `POST /v1/chat/completions` and supports tool calls
+  works. For local-only setups, `qwen3.6:latest`, `qwen2.5-coder:32b` and
+  `devstral` are good defaults.
 
 ---
 
@@ -84,11 +104,13 @@ git clone https://github.com/darkmanice/Atelier && cd atelier
 #    generates INTERNAL_API_TOKEN. Writes everything into .env.
 bash scripts/setup.sh
 
-# 3. Edit .env and set DEFAULT_MODEL (model id exposed by your LLM provider).
-#    Optionally, MASTER_ENCRYPTION_KEY if you want to persist LLM providers:
+# 3. Edit .env and set DEFAULT_MODEL (model id exposed by your LLM provider —
+#    must support tool-calling). Optionally set MASTER_ENCRYPTION_KEY to
+#    persist saved providers:
 #      openssl rand -hex 32   # copy into .env
 
-# 4. Drop or clone any git repo you want the pipeline to work on under ./projects/.
+# 4. Drop or clone any git repo you want the pipeline to work on under
+#    ./projects/.
 
 # 5. Bring everything up (first run pulls ~2 GB of images)
 docker compose up -d --build
@@ -109,6 +131,18 @@ Every subdirectory with a `.git/` folder becomes a selectable target from the
 UI. No chown dance needed — the containers run with your host user's UID/GID,
 so files created by the pipeline stay owned by you.
 
+### Inspecting a task's worktree from your host
+
+Atelier mounts `worktrees/` at the **same absolute path** inside every
+container as on the host, so once a task creates a worktree you can run git
+on it directly:
+
+```bash
+cd worktrees/task-<id>
+git log --oneline -10
+git diff master..HEAD
+```
+
 ### Firing a task
 
 Use the UI at `http://localhost:8000`, or send a `POST /tasks` with a JSON
@@ -116,14 +150,14 @@ body. Minimum payload:
 
 ```json
 {
-  "prompt": "Describe what you want the agents to do.",
+  "prompt": "Describe what you want the agent to do.",
   "repo_path": "your-repo",
   "base_branch": "main"
 }
 ```
 
 See `TaskCreate` in `orchestrator/main.py` for the full schema (LLM provider
-overrides, per-role model selection, etc.).
+overrides, per-phase model selection, custom pipeline spec, etc.).
 
 ---
 
@@ -137,7 +171,7 @@ All settings live in `.env`. The ones marked **auto** are filled in by
 | Variable | Description |
 |---|---|
 | `INTERNAL_API_TOKEN` | **auto** · Shared secret between orchestrator and worker. Generated by `setup.sh`. |
-| `DEFAULT_MODEL` | Default LLM model id shown in the UI (can be overridden per task). Any model id your provider exposes — e.g. `meta/llama-3.3-70b-instruct`, `gpt-4o-mini`, `qwen2.5-coder:32b`. |
+| `DEFAULT_MODEL` | Default LLM model id shown in the UI (can be overridden per task). MUST support tool-calling. Examples: `qwen3.6:latest`, `qwen2.5-coder:32b`, `devstral`, `meta/llama-3.3-70b-instruct`, `gpt-4o-mini`. |
 | `HOST_UID` / `HOST_GID` | **auto** · UID/GID of your host user. Containers run with these so files stay owned by you. Generated by `setup.sh` (`id -u` / `id -g`). |
 | `DOCKER_GID` | **auto** · GID of the host's `docker` group. The worker uses it as a supplementary group to access `/var/run/docker.sock`. Generated by `setup.sh`. |
 
@@ -147,19 +181,21 @@ All settings live in `.env`. The ones marked **auto** are filled in by
 |---|---|---|
 | `MASTER_ENCRYPTION_KEY` | *(empty)* | 32 hex bytes (64 chars). When set, enables stored LLM providers (API keys encrypted at `data/providers.json`). When empty, only the one-shot flow works. **Losing this key = losing every stored API key.** |
 | `MAX_CONCURRENT_TASKS` | `2` | Parallel flow runs allowed in the pool. |
+| `MAX_RETRY_ATTEMPTS` | `2` | After this many failed test-gate retries the flow gives up. |
+| `OPENHANDS_MAX_ITERATIONS` | `30` | Cap of agent loop iterations per session. Each iteration ≈ one LLM call + one tool execution. Bound the wall-clock of a single phase with slow local models. |
 | `ORCHESTRATOR_PORT` | `8000` | Host port for the FastAPI service. |
-| `AGENT_MEM_LIMIT` | `4g` | Max memory per agent container. |
-| `AGENT_CPU_LIMIT` | `2.0` | CPUs per agent container (decimals allowed). |
-| `AGENT_TIMEOUT_SEC` | `2400` | Per-invocation timeout for the agent container. |
+| `AGENT_MEM_LIMIT` | `4g` | Max memory per ephemeral runner container. |
+| `AGENT_CPU_LIMIT` | `2.0` | CPUs per runner container (decimals allowed). |
 
 ---
 
 ## Target-repo configuration: `.atelier.yml`
 
 Place a `.atelier.yml` at the root of your target repo (NOT in the atelier
-repo itself) describing how to install dependencies and run your tests. Every
-section is optional — omitting one just skips that gate with a warning. If
-the file is missing entirely, the pipeline still runs but executes no tests.
+repo itself) describing how to install dependencies, run your tests, and
+optionally bring up a preview after success. Every section is optional —
+omitting one just skips that phase with a warning. If the file is missing
+entirely, the pipeline still runs but executes no tests.
 
 See `.atelier.yml.example` for a full template.
 
@@ -194,13 +230,18 @@ up live.
 
 | What changed | What to rebuild |
 |---|---|
-| `flows/` or `orchestrator/` | `docker compose build prefect-worker orchestrator && docker compose up -d --force-recreate prefect-worker orchestrator` |
-| `agents/` or prompts | `docker compose build agent-builder` (it is a one-shot service that produces `atelier-agent:latest` and exits; the worker `docker run`s that image for each invocation) |
+| `flows/`, `orchestrator/` or `agents/` | `docker compose build prefect-worker orchestrator && docker compose up -d --force-recreate prefect-worker orchestrator`. The worker image now embeds `openhands-sdk` and `openhands-tools`, and copies the full `agents/` tree. |
 | Runner Dockerfiles | `docker compose build runner-quick-builder runner-e2e-builder` |
 
 ---
 
 ## Gotchas / Troubleshooting
+
+**Tool-calling is required.** OpenHands drives the LLM via function calls
+through the OpenAI-compatible endpoint. Models that don't support tool
+calling (some older LLaMA variants, gemma without the `:instruct` flavour,
+…) will fail at the first action. Stick to `qwen3.6`, `qwen2.5-coder`,
+`devstral`, `llama3.1+`, `mistral` family, or any frontier-API model.
 
 **Permissions on bind-mounts.** Every container runs with your host user's
 UID/GID (`HOST_UID` / `HOST_GID` in `.env`, auto-filled by `setup.sh`), so
@@ -208,25 +249,22 @@ files created by the pipeline on bind-mounted directories stay owned by you.
 If you rebuild after changing `HOST_UID`/`HOST_GID`, you'll need to pass
 `--build` to pick up the new values baked into the images.
 
-**Container/host path dualism.** The worker launches containers on the host's
-Docker daemon. Any bind mount needs:
-
-- the path as the worker sees it (e.g. `/app/worktrees/task-42`)
-- the path as the host sees it (e.g. `/home/you/atelier/worktrees/task-42`)
-
-That is why `WORKTREES_HOST_DIR` is bind-mounted to itself (same path inside
-and outside the container). Don't change this without understanding what
-breaks.
+**Path-aliased mounts.** `projects/`, `worktrees/`, `logs/` and `data/` are
+bind-mounted at the same absolute path inside every container as on the
+host, so anything `git worktree add` writes resolves from both sides
+(`cd worktrees/task-X && git log` works directly). This assumes you run
+`docker compose` from the repo root so `${PWD}` substitution resolves
+correctly. `scripts/setup.sh` enforces that.
 
 **Repo-path sandbox.** `orchestrator/main.py::_resolve_repo_path` requires
-the target repo to live under `/projects` and contain `.git`. There is no knob
-to bypass this.
+the target repo to live under `PROJECTS_ROOT` (the host's `${PWD}/projects`
+by default) and contain `.git`. There is no knob to bypass this.
 
 **Same-name branch reuse.** `create_worktree` force-deletes a pre-existing
 feature branch (`git branch -D`) before recreating the worktree. Tasks are
 ephemeral — do not assume the branch from a previous run survives.
 
-**LLM reachable from the worker.** The agent container must be able to reach
+**LLM reachable from the worker.** The worker process must be able to reach
 your LLM provider. If you run Ollama on Windows under WSL2, the gateway IP
 can drift between reboots:
 
@@ -234,7 +272,7 @@ can drift between reboots:
 ip route show | grep -i default | awk '{ print $3 }'
 ```
 
-Update the preset from the UI (`/providers`) if you use it.
+Update the preset from the UI (`/providers-ui`) if you use it.
 
 **E2E with no Docker-in-Docker.** `e2e-setup`/`e2e-teardown` run on the
 worker (which has the Docker socket). Test runners deliberately do NOT get
@@ -244,9 +282,10 @@ new capability — not a bug.
 **Useful logs.**
 
 ```bash
-docker compose logs -f prefect-worker     # where the flows run
+docker compose logs -f prefect-worker     # where the flows AND OpenHands run
 docker compose logs -f orchestrator       # FastAPI
-cat logs/task-<id>.md                     # per-task markdown log
+cat logs/task-<id>.md                     # human-readable task log
+cat logs/task-<id>.events.jsonl           # raw OpenHands event stream
 ```
 
 **Prefect UI.** `http://localhost:4200` — per-run timeline, per-task logs,

@@ -15,9 +15,9 @@ deployments:
     # Concurrency: at most N flow runs in parallel on this pool.
     # Honors MAX_CONCURRENT_TASKS from your .env.
     concurrency_limit: 2
-    description: "Pipeline Implementer → Reviewer → Simplifier"
+    description: "Pipeline: agent-session → test gates → (optional simplify) → preview"
   - name: cleanup
     entrypoint: flows/pipeline.py:cleanup_task_flow
     work_pool:
       name: atelier-pool
-    description: "Delete a task: remove its agent containers and tear down its preview"
+    description: "Delete a task: tear down its preview"

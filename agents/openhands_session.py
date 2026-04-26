@@ -16,9 +16,11 @@ provided by the SDK. The wrapper:
     WORKER HOST (not in a Docker sandbox) — atelier's `branch_guard`
     is what keeps the agent on its feature branch.
   - Subscribes a callback that streams every `Event` to
-    `<worktree>/.task-events.jsonl` so the orchestrator can later
-    move it to `logs/task-<id>.events.jsonl` (P3: events persisted
-    but not rendered in the UI yet).
+    `<LOGS_DIR>/task-<id>.events.jsonl` (append-only). Events from
+    multiple sessions of the same task (implement + simplify, or
+    retried implement attempts) accumulate in the same file in
+    order. The events are persisted but NOT rendered in the UI yet
+    — the front-end visualiser will land in v2.1.
   - After `conversation.run()` returns, does the manual
     `git add -A && git commit` so every attempt produces a commit
     (matches the existing aider-based implementer's behavior).
@@ -35,6 +37,7 @@ from typing import Literal
 from pydantic import SecretStr
 
 from agents.models import AgentResult, LogEntry, TaskInput
+from orchestrator.config import LOGS_DIR
 
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -102,10 +105,13 @@ def run(task: TaskInput, mode: SessionMode, api_key: str = "") -> AgentResult:
     full_message = "\n".join(message_parts)
 
     worktree = Path(task.worktree_path)
-    events_file = worktree / ".task-events.jsonl"
-    # Wipe any leftover from a previous attempt so callers reading the
-    # file get a clean stream for this run.
-    events_file.unlink(missing_ok=True)
+    # Persistent location: events for ALL sessions of this task land in
+    # the same file under LOGS_DIR. We append (not truncate) so the
+    # implement+simplify sequence — or retried implement attempts —
+    # produce a single chronological event stream the user can inspect
+    # later. The very first call creates the file.
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    events_file = LOGS_DIR / f"task-{task.task_id}.events.jsonl"
 
     # Imports are local: openhands-sdk pulls in a heavy dep tree at
     # import time (litellm, anthropic, browsergym, ...). Importing only
@@ -253,7 +259,7 @@ def _finalize(
                 "OpenHands finished without modifying any file. The model "
                 "likely refused or got stuck. Try a stronger coder-tuned "
                 "model or check the event log at "
-                f"{worktree}/.task-events.jsonl."
+                f"{LOGS_DIR}/task-{task.task_id}.events.jsonl."
             )
             log.append(LogEntry(role=task.role, kind="error", content=msg))
             return AgentResult(
