@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&display=swap">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.css">
   <style>
     :root {
       /* Backgrounds — luminance stacking */
@@ -924,6 +925,167 @@
     .log-block { display: block; }
     .log-block[data-kind="agent"] { scroll-margin-top: 12px; }
 
+    /* ─────────── Pipeline canvas (Drawflow) ─────────── */
+    .pipeline-editor {
+      display: grid;
+      grid-template-columns: 168px 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .pipeline-editor.is-readonly { grid-template-columns: 1fr; }
+    .pipeline-palette {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+    }
+    .pipeline-palette h4 {
+      margin: 0 0 4px;
+      font-size: 11px;
+      font-weight: 510;
+      color: var(--text-4);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .palette-block {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      color: var(--text-2);
+      font-size: 13px;
+      font-weight: 510;
+      cursor: grab;
+      user-select: none;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .palette-block:hover {
+      background: var(--bg-hover);
+      border-color: rgba(255, 255, 255, 0.16);
+      color: var(--text);
+    }
+    .palette-block:active { cursor: grabbing; }
+    .palette-block[data-disabled="1"] {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .palette-block .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: 0 0 8px;
+    }
+    .palette-block[data-kind="agent"]   .dot { background: #7170ff; }
+    .palette-block[data-kind="gate"]    .dot { background: #f59e0b; }
+    .palette-block[data-kind="preview"] .dot { background: #10b981; }
+
+    .pipeline-canvas {
+      position: relative;
+      height: 320px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      overflow: hidden;
+    }
+    /* Drawflow assigns `parent-drawflow` to the element you pass into it.
+       That element needs explicit dimensions or its inner `.drawflow` (which
+       sizes itself at 100%) collapses to zero. */
+    .pipeline-canvas > #pipeline-canvas {
+      position: absolute;
+      inset: 0;
+    }
+    .pipeline-canvas-error {
+      padding: 12px 14px;
+      color: var(--danger);
+      font-size: 13px;
+    }
+    .pipeline-canvas-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-4);
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .pipeline-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .pipeline-toolbar .spacer { flex: 1; }
+    .pipeline-validation {
+      font-size: 12px;
+      color: var(--warn);
+      min-height: 1em;
+    }
+    .pipeline-validation.ok { color: var(--success); }
+
+    /* Drawflow theme overrides — dark, matching the rest of the UI. */
+    .drawflow .drawflow-node {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      color: var(--text);
+      font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+      font-size: 12.5px;
+      font-weight: 510;
+      padding: 8px 12px;
+      min-width: 130px;
+      box-shadow: rgba(0, 0, 0, 0.18) 0px 4px 12px;
+    }
+    .drawflow .drawflow-node.selected {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 2px rgba(113, 112, 255, 0.25), rgba(0, 0, 0, 0.18) 0px 4px 12px;
+    }
+    .drawflow .drawflow-node .node-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .drawflow .drawflow-node .node-row .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: 0 0 8px;
+    }
+    .drawflow .drawflow-node[data-kind="agent"]   .dot { background: #7170ff; }
+    .drawflow .drawflow-node[data-kind="gate"]    .dot { background: #f59e0b; }
+    .drawflow .drawflow-node[data-kind="preview"] .dot { background: #10b981; }
+
+    .drawflow .drawflow-node .input,
+    .drawflow .drawflow-node .output {
+      background: var(--bg);
+      border: 2px solid var(--accent-2);
+      width: 12px;
+      height: 12px;
+    }
+    .drawflow .connection .main-path {
+      stroke: rgba(113, 112, 255, 0.55);
+      stroke-width: 2;
+    }
+    .drawflow .connection .main-path:hover {
+      stroke: var(--accent-hover);
+    }
+    .drawflow-delete {
+      background: var(--danger);
+      color: #fff;
+      border: 1px solid var(--danger);
+      box-shadow: rgba(0, 0, 0, 0.3) 0px 2px 6px;
+    }
+    .pipeline-canvas.is-readonly .drawflow-node { cursor: default; }
+    .pipeline-canvas.is-readonly .input,
+    .pipeline-canvas.is-readonly .output { display: none; }
+
     /* Scrollbars (dark) */
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -945,6 +1107,7 @@
       </a>
       <nav class="masthead-nav">
         <a href="/providers-ui">Providers</a>
+        <a href="/pipeline-templates-ui">Templates</a>
         <a href="http://localhost:4200" target="_blank" rel="noopener">Prefect ↗</a>
       </nav>
     </header>
@@ -1126,5 +1289,264 @@
 
     })();
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.js"></script>
+  <script>
+    /*
+     * PipelineEditor — thin wrapper around Drawflow that knows about the
+     * atelier block catalog and the linear-chain serialisation contract
+     * (spec = ordered list of {type, id}).
+     *
+     * Used from index.html (interactive), pipeline_templates.html
+     * (interactive, with save), and task_detail.html (read-only).
+     */
+    window.PipelineEditor = (function () {
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+      }
+
+      function nodeHtml(label) {
+        return `<div class="node-row"><span class="dot"></span><span>${escapeHtml(label)}</span></div>`;
+      }
+
+      function create(opts) {
+        const {
+          canvasEl,
+          paletteEl = null,
+          toolbar = {},
+          blocks,
+          defaultSpec = [],
+          initialSpec = null,
+          readOnly = false,
+        } = opts;
+
+        if (!canvasEl) return null;
+        if (typeof Drawflow === 'undefined') {
+          canvasEl.innerHTML = '<div class="pipeline-canvas-error">Editor library failed to load.</div>';
+          return null;
+        }
+
+        const editor = new Drawflow(canvasEl);
+        editor.reroute = true;
+        editor.editor_mode = readOnly ? 'fixed' : 'edit';
+        if (readOnly) canvasEl.classList.add('is-readonly');
+        editor.start();
+
+        const blockByType = Object.fromEntries(blocks.map(b => [b.type, b]));
+        let nextStepCounter = 1;
+
+        function addStep(step, x, y) {
+          const block = blockByType[step.type];
+          if (!block) return null;
+          const stepId = step.id || `${block.type}-${nextStepCounter++}`;
+          const id = editor.addNode(
+            block.type,                             // Drawflow node "name"
+            readOnly ? 0 : 1,                       // inputs
+            readOnly ? 0 : 1,                       // outputs
+            x, y,
+            block.type,                             // CSS class on .drawflow-node
+            { type: block.type, kind: block.kind, step_id: stepId },
+            nodeHtml(block.label),
+          );
+          // Decorate with data-kind so the dot color works (Drawflow doesn't
+          // expose data-* attributes directly via addNode).
+          const nodeEl = canvasEl.querySelector(`#node-${id}`);
+          if (nodeEl) nodeEl.setAttribute('data-kind', block.kind);
+          return id;
+        }
+
+        function getNodes() {
+          return editor.drawflow.drawflow.Home.data;
+        }
+
+        function loadSpec(spec) {
+          editor.clear();
+          const margin = 40;
+          const stride = 200;
+          const ids = [];
+          spec.forEach((step, i) => {
+            const id = addStep(step, margin + i * stride, 60 + (i % 2) * 80);
+            if (id) ids.push(id);
+          });
+          for (let i = 0; i < ids.length - 1; i++) {
+            editor.addConnection(ids[i], ids[i + 1], 'output_1', 'input_1');
+          }
+          notifyChange();
+        }
+
+        function clear() {
+          editor.clear();
+          notifyChange();
+        }
+
+        function exportSpec() {
+          const nodes = getNodes();
+          const ids = Object.keys(nodes);
+          if (ids.length === 0) {
+            return { ok: true, spec: [], message: '', empty: true };
+          }
+
+          const heads = ids.filter(id => {
+            const conns = (nodes[id].inputs?.input_1?.connections) || [];
+            return conns.length === 0;
+          });
+          if (heads.length === 0) {
+            return { ok: false, spec: null, message: 'Cycle detected — no starting block.' };
+          }
+          if (heads.length > 1) {
+            return { ok: false, spec: null, message: `${heads.length} disconnected starts. Wire them together.` };
+          }
+
+          const chain = [];
+          const seen = new Set();
+          let current = heads[0];
+          while (current != null) {
+            const cid = String(current);
+            if (seen.has(cid)) {
+              return { ok: false, spec: null, message: 'Cycle detected.' };
+            }
+            seen.add(cid);
+            chain.push(cid);
+            const outs = (nodes[cid].outputs?.output_1?.connections) || [];
+            if (outs.length > 1) {
+              return { ok: false, spec: null, message: 'Branching not supported (one outgoing per block).' };
+            }
+            current = outs.length === 1 ? outs[0].node : null;
+          }
+
+          if (chain.length !== ids.length) {
+            return { ok: false, spec: null, message: 'Some blocks are not connected to the chain.' };
+          }
+
+          const spec = chain.map(cid => {
+            const data = nodes[cid].data || {};
+            return { type: data.type || nodes[cid].name, id: data.step_id || `step-${cid}` };
+          });
+
+          const previewCount = spec.filter(s => s.type === 'preview').length;
+          if (previewCount > 1) {
+            return { ok: false, spec: null, message: 'Only one preview block allowed.' };
+          }
+
+          return {
+            ok: true,
+            spec,
+            message: `${spec.length} step${spec.length === 1 ? '' : 's'}`,
+          };
+        }
+
+        function updatePaletteSingletons(currentSpec) {
+          if (!paletteEl) return;
+          const previewUsed = currentSpec.some(s => s.type === 'preview');
+          paletteEl.querySelectorAll('.palette-block[data-type="preview"]').forEach(el => {
+            el.dataset.disabled = previewUsed ? '1' : '0';
+            el.draggable = !previewUsed;
+          });
+        }
+
+        function notifyChange() {
+          // Defer one tick: Drawflow fires removal events before its internal
+          // state is fully consistent.
+          setTimeout(() => {
+            const result = exportSpec();
+            if (toolbar.validationEl) {
+              toolbar.validationEl.textContent = result.message || '';
+              toolbar.validationEl.classList.toggle('ok', result.ok && result.spec.length > 0);
+            }
+            if (toolbar.hiddenInput) {
+              toolbar.hiddenInput.value = (result.ok && result.spec.length > 0)
+                ? JSON.stringify(result.spec)
+                : '';
+            }
+            updatePaletteSingletons(result.ok ? (result.spec || []) : []);
+            if (toolbar.emptyEl) {
+              toolbar.emptyEl.style.display =
+                Object.keys(getNodes()).length === 0 ? '' : 'none';
+            }
+            if (typeof opts.onChange === 'function') opts.onChange(result);
+          }, 0);
+        }
+
+        // Palette wiring.
+        if (paletteEl && !readOnly) {
+          blocks.forEach(b => {
+            const el = document.createElement('div');
+            el.className = 'palette-block';
+            el.draggable = true;
+            el.dataset.type = b.type;
+            el.dataset.kind = b.kind;
+            el.innerHTML = `<span class="dot"></span><span>${escapeHtml(b.label)}</span>`;
+            el.addEventListener('dragstart', e => {
+              if (el.dataset.disabled === '1') { e.preventDefault(); return; }
+              e.dataTransfer.setData('application/x-pipeline-block', b.type);
+              e.dataTransfer.effectAllowed = 'copy';
+            });
+            paletteEl.appendChild(el);
+          });
+
+          canvasEl.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          });
+          canvasEl.addEventListener('drop', e => {
+            e.preventDefault();
+            const type = e.dataTransfer.getData('application/x-pipeline-block');
+            if (!type || !blockByType[type]) return;
+            const rect = editor.precanvas.getBoundingClientRect();
+            const z = editor.zoom || 1;
+            const x = (e.clientX - rect.x) / z;
+            const y = (e.clientY - rect.y) / z;
+            addStep({ type }, x, y);
+            notifyChange();
+          });
+        }
+
+        // Drawflow events.
+        ['nodeCreated', 'nodeRemoved', 'connectionCreated', 'connectionRemoved']
+          .forEach(ev => editor.on(ev, notifyChange));
+
+        // Toolbar wiring.
+        if (toolbar.resetBtn && defaultSpec.length) {
+          toolbar.resetBtn.addEventListener('click', () => loadSpec(defaultSpec));
+        }
+        if (toolbar.clearBtn) {
+          toolbar.clearBtn.addEventListener('click', () => clear());
+        }
+        if (toolbar.templateSelect) {
+          toolbar.templateSelect.addEventListener('change', async () => {
+            const id = toolbar.templateSelect.value;
+            if (!id) return;
+            try {
+              const resp = await fetch('/pipeline-templates');
+              const list = await resp.json();
+              const t = list.find(x => x.id === id);
+              if (t && Array.isArray(t.spec)) loadSpec(t.spec);
+            } catch (err) { /* keep current spec */ }
+            toolbar.templateSelect.value = '';
+          });
+        }
+
+        if (initialSpec && initialSpec.length) {
+          loadSpec(initialSpec);
+        } else {
+          notifyChange();
+        }
+
+        return {
+          editor, loadSpec, clear, exportSpec,
+          getNodes, refresh: notifyChange,
+        };
+      }
+
+      async function fetchBlocks() {
+        const resp = await fetch('/ui/pipeline/blocks');
+        return resp.json();   // { blocks, default_spec }
+      }
+
+      return { create, fetchBlocks };
+    })();
+  </script>
+  {% block extra_scripts %}{% endblock %}
 </body>
 </html>

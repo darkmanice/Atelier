@@ -101,6 +101,44 @@
       <select id="model" name="model" class="combobox-source" tabindex="-1" aria-hidden="true"></select>
     </div>
 
+    <details class="role-overrides" id="pipeline-canvas-details">
+      <summary>
+        Customize pipeline <span class="role-overrides-hint">(drag, drop, wire)</span>
+      </summary>
+      <p class="role-overrides-desc">
+        Drag a block from the palette into the canvas and connect them
+        left-to-right. Right-click a node or connection to remove it.
+        Empty canvas = the default sequence. Worktree, install and E2E
+        setup/teardown are structural and never appear here.
+      </p>
+      <div class="pipeline-editor">
+        <aside class="pipeline-palette" id="pipeline-palette">
+          <h4>Blocks</h4>
+        </aside>
+        <div class="pipeline-canvas" id="pipeline-canvas-wrap">
+          <div id="pipeline-canvas"></div>
+          <div class="pipeline-canvas-empty" id="pipeline-canvas-empty">
+            Drag a block here · or pick a template
+          </div>
+        </div>
+      </div>
+      <div class="pipeline-toolbar">
+        <button type="button" id="pipeline-reset-btn" class="btn ghost small">Default sequence</button>
+        <button type="button" id="pipeline-clear-btn" class="btn ghost small">Clear</button>
+        {% if pipeline_templates %}
+          <select id="pipeline-template-select" class="field-input" style="max-width: 220px;">
+            <option value="" selected>Load template…</option>
+            {% for t in pipeline_templates %}
+              <option value="{{ t.id }}">{{ t.name }} ({{ t.step_count }} step{{ '' if t.step_count == 1 else 's' }})</option>
+            {% endfor %}
+          </select>
+        {% endif %}
+        <span class="spacer"></span>
+        <span class="pipeline-validation" id="pipeline-validation"></span>
+      </div>
+      <input type="hidden" name="pipeline_spec" id="pipeline_spec" value="">
+    </details>
+
     <details class="role-overrides" id="role-overrides-details">
       <summary>
         Vary model per role <span class="role-overrides-hint">(optional, for this task)</span>
@@ -327,4 +365,71 @@
 </section>
 {% endif %}
 
+{% endblock %}
+
+{% block extra_scripts %}
+  <script>
+    (function () {
+      const canvasEl = document.getElementById('pipeline-canvas');
+      const paletteEl = document.getElementById('pipeline-palette');
+      const detailsEl = document.getElementById('pipeline-canvas-details');
+      const hiddenInput = document.getElementById('pipeline_spec');
+      const validationEl = document.getElementById('pipeline-validation');
+      const emptyEl = document.getElementById('pipeline-canvas-empty');
+      const resetBtn = document.getElementById('pipeline-reset-btn');
+      const clearBtn = document.getElementById('pipeline-clear-btn');
+      const templateSelect = document.getElementById('pipeline-template-select');
+      const formEl = canvasEl ? canvasEl.closest('form') : null;
+      if (!canvasEl || !hiddenInput) return;   // empty-state: form not rendered
+
+      let editor = null;
+
+      async function init() {
+        if (editor) { return; }
+        let payload;
+        try {
+          payload = await PipelineEditor.fetchBlocks();
+        } catch (err) {
+          canvasEl.innerHTML = '<div class="pipeline-canvas-error">Could not load block catalog.</div>';
+          return;
+        }
+        editor = PipelineEditor.create({
+          canvasEl, paletteEl,
+          blocks: payload.blocks,
+          defaultSpec: payload.default_spec,
+          toolbar: { resetBtn, clearBtn, templateSelect, validationEl, hiddenInput, emptyEl },
+          // Start with an empty canvas so the user opts into the default
+          // explicitly via "Default sequence" — this matches the legacy API
+          // contract (empty form value = default spec on the server).
+          initialSpec: null,
+        });
+      }
+
+      // Drawflow needs a sized container — init on first open.
+      if (detailsEl) {
+        detailsEl.addEventListener('toggle', () => {
+          if (detailsEl.open) init();
+        });
+        if (detailsEl.open) init();
+      } else {
+        init();
+      }
+
+      // Block submission if the canvas has nodes but isn't a valid chain.
+      if (formEl) {
+        formEl.addEventListener('submit', e => {
+          if (!editor) return;
+          const result = editor.exportSpec();
+          if (!result.ok) {
+            e.preventDefault();
+            if (validationEl) {
+              validationEl.textContent = result.message;
+              validationEl.classList.remove('ok');
+            }
+            if (detailsEl && !detailsEl.open) detailsEl.open = true;
+          }
+        });
+      }
+    })();
+  </script>
 {% endblock %}
