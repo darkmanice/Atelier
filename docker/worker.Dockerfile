@@ -33,8 +33,10 @@ RUN pip install --no-cache-dir -r /tmp/worker-requirements.txt
 # Pipeline source code
 COPY flows/ /app/flows/
 COPY orchestrator/ /app/orchestrator/
-COPY agents/models.py /app/agents/models.py
-COPY agents/__init__.py /app/agents/__init__.py
+# In V2 the worker runs OpenHands directly (no per-role agent containers),
+# so it needs the full `agents/` package — wrappers, prompts and the
+# shared `models.py` contract.
+COPY agents/ /app/agents/
 COPY prefect.yaml /app/prefect.yaml
 
 # Create runtime directories and hand them to the host user's UID/GID so
