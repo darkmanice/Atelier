@@ -179,7 +179,12 @@ def run(task: TaskInput, mode: SessionMode, api_key: str = "") -> AgentResult:
         callbacks=[_persist_event],
         workspace=str(worktree),
         conversation_id=uuid.uuid4(),
-        max_iterations=_MAX_ITERATIONS,
+        max_iteration_per_run=_MAX_ITERATIONS,
+        # The default visualizer prints a long pretty dump per event to
+        # stdout; with Prefect capturing every line, the worker logs
+        # blow up. We persist events to JSONL ourselves via the
+        # callback above, so suppress the stdout pretty-printer.
+        visualizer=None,
     )
 
     _echo(f"running mode={mode} model={model_id} max_iter={_MAX_ITERATIONS}")

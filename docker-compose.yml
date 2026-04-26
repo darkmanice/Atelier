@@ -79,6 +79,14 @@ services:
       - WORKTREES_DIR=${PWD}/worktrees
       - PROJECTS_ROOT=${PWD}/projects
       - LOGS_DIR=${PWD}/logs
+      # OpenHands SDK writes a profile store under ~/.openhands. The
+      # worker runs as a UID without a configured home directory, so
+      # without this the SDK tries to mkdir under `/` and 13s. Pointing
+      # HOME at a writable scratch directory keeps it happy; the data
+      # under ~/.openhands is not load-bearing for atelier (we don't
+      # use SDK profiles).
+      - HOME=/tmp
+      - OPENHANDS_SUPPRESS_BANNER=1
       # Used by the ephemeral runner containers (test gates). Kept under
       # the AGENT_* names because the worker's runner code reads them
       # via orchestrator.config; renaming to RUNNER_* would be a larger
